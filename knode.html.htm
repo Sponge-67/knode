@@ -244,7 +244,7 @@
             background: #242424;
             border-top: 1px solid #333;
             padding: 6px 10px;
-            height: 180px;
+            height: 200px;
             min-height: 50px;
             max-height: 400px;
             flex-shrink: 0;
@@ -337,6 +337,14 @@
         }
         .live-state-panel .state-content .exec-error {
             color: #e74c3c;
+        }
+        .live-state-panel .state-content .exec-stdout {
+            color: #f39c12;
+            font-size: 8px;
+        }
+        .live-state-panel .state-content .data-flow {
+            color: #667eea;
+            font-size: 8px;
         }
         .live-state-panel .state-content::-webkit-scrollbar {
             width: 4px;
@@ -783,6 +791,7 @@
         .debug-log .debug-entry .success { color: #2ecc71; }
         .debug-log .debug-entry .warning { color: #f39c12; }
         .debug-log .debug-entry .port-change { color: #f39c12; }
+        .debug-log .debug-entry .data-flow { color: #667eea; }
         .debug-log::-webkit-scrollbar {
             width: 3px;
         }
@@ -1088,7 +1097,7 @@
         <div class="live-state-panel" id="liveStatePanel">
             <div class="panel-resizer" id="stateResizer"></div>
             <div class="panel-header">
-                <h3>Live Graph State</h3>
+                <h3>State Output</h3>
                 <div style="display:flex;gap:5px;align-items:center;">
                     <button onclick="copyLiveState()" style="background:#333;border:1px solid #444;color:#c8c8c8;cursor:pointer;font-size:9px;padding:2px 8px;border-radius:3px;transition:all 0.2s;">Copy</button>
                     <button onclick="copyDebugLog()" style="background:#333;border:1px solid #444;color:#c8c8c8;cursor:pointer;font-size:9px;padding:2px 8px;border-radius:3px;transition:all 0.2s;">Copy Debug</button>
@@ -1185,6 +1194,9 @@
 
         const BACKEND_URL = 'http://localhost:5000';
 
+        // Store execution results between node executions
+        let executionCache = {};
+
         async function executeNode(nodeId, inputs) {
             try {
                 const response = await fetch(`${BACKEND_URL}/node/${nodeId}/execute`, {
@@ -1267,6 +1279,22 @@
             }
         }
 
+        // Helper function to find a wire by its endpoints
+        function findWire(fromId, toId, fromPort, toPort) {
+            for (let id in graph.wires) {
+                const wire = graph.wires[id];
+                if (wire.from === fromId && wire.to === toId &&
+                    wire.fromPort === fromPort && wire.toPort === toPort) {
+                    return wire;
+                }
+            }
+            return null;
+        }
+
+        // ================================================================
+        // GRAPH EXECUTION WITH ANIMATIONS
+        // ================================================================
+
         async function executeGraphWithUI() {
             document.getElementById('status').innerHTML = 'Executing graph...';
             addDebugEntry('Executing graph...', 'info');
@@ -1295,7 +1323,6 @@
                 });
             }
 
-            // Update graph state on backend
             await fetch(`${BACKEND_URL}/graph/state`, {
                 method: 'POST',
                 headers: {
@@ -1304,13 +1331,19 @@
                 body: JSON.stringify({ nodes, connections })
             });
 
-            // Update all node codes
             for (let id in graph.nodes) {
                 const node = graph.nodes[id];
                 await updateNodeCodeBackend(parseInt(id), node.code);
             }
 
-            // Execute graph
+            // Start animations on all wires before execution
+            for (let id in graph.wires) {
+                const wire = graph.wires[id];
+                if (wire.enabled) {
+                    wire.startAnimation();
+                }
+            }
+
             const response = await fetch(`${BACKEND_URL}/graph/execute`, {
                 method: 'POST',
                 headers: {
@@ -1325,6 +1358,12 @@
 
             const result = await response.json();
 
+            // Stop all animations after execution
+            for (let id in graph.wires) {
+                const wire = graph.wires[id];
+                wire.stopAnimation();
+            }
+
             if (result && result.success) {
                 document.getElementById('status').innerHTML = 'Graph executed successfully';
                 addDebugEntry('Graph executed successfully', 'success');
@@ -1334,9 +1373,24 @@
                     const node = graph.nodes[nodeId];
                     const nodeName = node ? node.name : 'Node ' + nodeId;
                     const output = result.outputs[nodeId];
-                    outputHtml += `<div style="color:#888;font-size:9px;padding:2px 0;border-bottom:1px solid rgba(255,255,255,0.05);">${nodeName}: <span style="color:#c8c8c8;">${JSON.stringify(output)}</span></div>`;
+                    const stdout = result.stdout ? result.stdout[nodeId] : '';
+
+                    if (output && output.error) {
+                        outputHtml += `<div style="color:#e74c3c;font-size:9px;padding:2px 0;border-bottom:1px solid rgba(255,255,255,0.05);">${nodeName}: ERROR - ${output.error}</div>`;
+                        if (output.traceback) {
+                            outputHtml += `<div style="color:#666;font-size:7px;white-space:pre-wrap;max-height:100px;overflow-y:auto;padding-left:10px;">${output.traceback}</div>`;
+                        }
+                    } else {
+                        outputHtml += `<div style="color:#888;font-size:9px;padding:2px 0;border-bottom:1px solid rgba(255,255,255,0.05);">${nodeName}: <span style="color:#c8c8c8;">${JSON.stringify(output)}</span></div>`;
+                        if (stdout) {
+                            outputHtml += `<div style="color:#f39c12;font-size:8px;padding:2px 0 4px 10px;white-space:pre-wrap;">${stdout.trim()}</div>`;
+                        }
+                    }
                 }
                 document.getElementById('liveState').innerHTML = outputHtml;
+                // Clear execution cache
+                executionCache = {};
+
             } else {
                 const errMsg = result ? result.error : 'Unknown error';
                 document.getElementById('status').innerHTML = 'Execution failed: ' + errMsg;
@@ -1351,14 +1405,18 @@
             }
         }
 
+        // ================================================================
+        // SINGLE NODE EXECUTION WITH ANIMATIONS
+        // ================================================================
+
         async function executeSingleNode(nodeId) {
             const node = graph.nodes[nodeId];
             if (!node) return;
 
             document.getElementById('status').innerHTML = 'Executing node...';
-            addDebugEntry('Executing node "' + node.name + '"', 'info');
+            addDebugEntry('Executing node "' + node.name + '" (ID: ' + nodeId + ')', 'info');
 
-            // Build node info to send to backend
+            // Build node info
             const nodeInfo = {
                 name: node.name,
                 nodeClass: node.nodeClass,
@@ -1368,47 +1426,132 @@
                 lineColor: node.lineColor
             };
 
-            // Update node code and info on backend
+            // Update node code on backend
             await updateNodeCodeBackend(nodeId, node.code);
 
-            // Update graph state with this node info
+            // Build the complete graph state
+            const allNodes = {};
+            for (let id in graph.nodes) {
+                const n = graph.nodes[id];
+                allNodes[id] = {
+                    name: n.name,
+                    nodeClass: n.nodeClass,
+                    code: n.code,
+                    inputs: n.inputs.map(p => ({ name: p.name, capacity: p.capacity })),
+                    outputs: n.outputs.map(p => ({ name: p.name, capacity: p.capacity })),
+                    lineColor: n.lineColor
+                };
+            }
+
+            const allConnections = [];
+            for (let id in graph.wires) {
+                const wire = graph.wires[id];
+                allConnections.push({
+                    from: wire.from,
+                    to: wire.to,
+                    fromPort: wire.fromPort,
+                    toPort: wire.toPort
+                });
+            }
+
             await fetch(`${BACKEND_URL}/graph/state`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({
-                    nodes: { [nodeId]: nodeInfo },
-                    connections: []
-                })
+                body: JSON.stringify({ nodes: allNodes, connections: allConnections })
             });
 
             // Prepare inputs from connected nodes
             const inputs = {};
             const connections = graph.getNodeConnections(nodeId);
+            let hasUpstreamData = false;
+            let animatedWires = [];
+
+            // First, execute all upstream nodes and collect their outputs
             for (let wire of connections) {
                 if (wire.to === nodeId) {
-                    // Try to get value from connected node
                     const fromNode = graph.nodes[wire.from];
                     if (fromNode) {
-                        inputs[wire.toPort] = null;
+                        // Check if this upstream node has already been executed
+                        if (!executionCache[wire.from]) {
+                            // Execute the upstream node first
+                            const upstreamResult = await executeSingleNodeInternal(wire.from);
+                            if (upstreamResult && upstreamResult.success) {
+                                executionCache[wire.from] = upstreamResult.output;
+                            } else {
+                                inputs[wire.toPort] = null;
+                                continue;
+                            }
+                        }
+                        // Get the output from the cache
+                        const upstreamOutput = executionCache[wire.from];
+                        if (upstreamOutput && upstreamOutput[wire.fromPort] !== undefined) {
+                            inputs[wire.toPort] = upstreamOutput[wire.fromPort];
+                            hasUpstreamData = true;
+
+                            // Start animation on the wire
+                            const wireObj = findWire(wire.from, wire.to, wire.fromPort, wire.toPort);
+                            if (wireObj) {
+                                wireObj.startAnimation();
+                                animatedWires.push(wireObj);
+                            }
+                        } else {
+                            inputs[wire.toPort] = null;
+                        }
                     }
                 }
             }
 
+            // Execute the current node
             const result = await executeNode(nodeId, inputs);
 
+            // Store result in cache and stop animations
+            if (result && result.success) {
+                executionCache[nodeId] = result.output;
+
+                // Stop all animations (gradient + glow removed)
+                for (let wireObj of animatedWires) {
+                    wireObj.stopAnimation();
+                }
+            }
+
+            // Update UI with result
             if (result && result.success) {
                 document.getElementById('status').innerHTML = 'Node executed successfully';
                 addDebugEntry('Node "' + node.name + '" executed', 'success', result.output);
 
-                let outputHtml = '<div style="color:#2ecc71;">Execution Result:</div>';
-                outputHtml += `<div style="color:#888;font-size:9px;">${node.name}: <span style="color:#c8c8c8;">${JSON.stringify(result.output)}</span></div>`;
-                if (result.stdout) {
-                    outputHtml += `<div style="color:#666;font-size:8px;">stdout: ${result.stdout}</div>`;
+                let outputHtml = '<div style="color:#2ecc71;">Flow Execution Result:</div>';
+                // Show data flow
+                for (let wire of connections) {
+                    if (wire.to === nodeId) {
+                        const fromNode = graph.nodes[wire.from];
+                        const fromName = fromNode ? fromNode.name : 'Node ' + wire.from;
+                        const value = inputs[wire.toPort];
+                        const status = value !== null ? '✓' : '✗';
+                        const wireObj = findWire(wire.from, wire.to, wire.fromPort, wire.toPort);
+                        const animStatus = wireObj && wireObj.isAnimating ? '🌊 animating' : '⏹ stopped';
+                        outputHtml += `<div style="color:#667eea;font-size:8px;padding:2px 0;">${fromName}.${wire.fromPort} → ${node.name}.${wire.toPort} = ${JSON.stringify(value)} ${status} [${animStatus}]</div>`;
+                    }
                 }
+
+                outputHtml += `<div style="color:#888;font-size:9px;padding:4px 0;border-top:1px solid #333;border-bottom:1px solid rgba(255,255,255,0.05);">${node.name}: <span style="color:#c8c8c8;">${JSON.stringify(result.output)}</span></div>`;
+                if (result.stdout) {
+                    outputHtml += `<div style="color:#f39c12;font-size:8px;padding:2px 0 4px 10px;white-space:pre-wrap;">${result.stdout}</div>`;
+                }
+
+                // Show all cached results
+                outputHtml += '<div style="color:#555;font-size:7px;margin-top:4px;border-top:1px solid #333;padding-top:4px;">Cached Results:</div>';
+                for (let id in executionCache) {
+                    const cachedNode = graph.nodes[id];
+                    const cachedName = cachedNode ? cachedNode.name : 'Node ' + id;
+                    const status = executionCache[id] ? '✓' : '✗';
+                    outputHtml += `<div style="color:#666;font-size:7px;padding:1px 0;">${cachedName}: ${JSON.stringify(executionCache[id])} ${status}</div>`;
+                }
+
                 document.getElementById('liveState').innerHTML = outputHtml;
                 updatePropertiesPanel(node);
+
             } else {
                 const errMsg = result ? result.error : 'Unknown error';
                 document.getElementById('status').innerHTML = 'Execution failed: ' + errMsg;
@@ -1420,6 +1563,228 @@
                     errorHtml += `<div style="color:#666;font-size:8px;white-space:pre-wrap;max-height:200px;overflow-y:auto;">${result.traceback}</div>`;
                 }
                 document.getElementById('liveState').innerHTML = errorHtml;
+            }
+
+            saveState();
+        }
+
+        // Internal function for upstream node execution
+        async function executeSingleNodeInternal(nodeId) {
+            const node = graph.nodes[nodeId];
+            if (!node) return { success: false };
+
+            const inputs = {};
+            const connections = graph.getNodeConnections(nodeId);
+
+            // Recursively execute upstream nodes
+            for (let wire of connections) {
+                if (wire.to === nodeId) {
+                    const fromNode = graph.nodes[wire.from];
+                    if (fromNode && !executionCache[wire.from]) {
+                        const upstreamResult = await executeSingleNodeInternal(wire.from);
+                        if (upstreamResult && upstreamResult.success) {
+                            executionCache[wire.from] = upstreamResult.output;
+                        }
+                    }
+                    if (executionCache[wire.from] && executionCache[wire.from][wire.fromPort] !== undefined) {
+                        inputs[wire.toPort] = executionCache[wire.from][wire.fromPort];
+                    } else {
+                        inputs[wire.toPort] = null;
+                    }
+                }
+            }
+
+            // Build node info
+            const nodeInfo = {
+                name: node.name,
+                nodeClass: node.nodeClass,
+                code: node.code,
+                inputs: node.inputs.map(p => ({ name: p.name, capacity: p.capacity })),
+                outputs: node.outputs.map(p => ({ name: p.name, capacity: p.capacity })),
+                lineColor: node.lineColor
+            };
+
+            await updateNodeCodeBackend(nodeId, node.code);
+
+            const result = await executeNode(nodeId, inputs);
+            return result;
+        }
+
+        // ================================================================
+        // WIRE CLASS - Simple animation with gradient and pulsating glow
+        // ================================================================
+
+        class Wire {
+            constructor(fromId, toId, fromPortName, toPortName) {
+                this.id = nextId++;
+                this.from = fromId;
+                this.to = toId;
+                this.fromPort = fromPortName;
+                this.toPort = toPortName;
+                this.fromPortId = null;
+                this.toPortId = null;
+                this.isWire = true;
+                this.wireClass = 'standard';
+                this.enabled = true;
+                this.properties = {};
+
+                // Visual properties
+                this.color = '#505050';
+                this.selectedColor = '#888888';
+                this.width = 1.5;
+                this.selectedWidth = 2.5;
+                this.fromPortObj = null;
+                this.toPortObj = null;
+
+                // Match highlighting
+                this.sameTypeHighlight = false;
+                this.partialMatchHighlight = false;
+
+                // Animation properties
+                this.isAnimating = false;
+                this.animationStartTime = 0;
+                this.gradientProgress = 0;
+                this.isGlowing = false;
+                this.glowIntensity = 0;
+                this.pulsatePhase = 0;
+            }
+
+            // Start animation (gradient from source to target + glow)
+            startAnimation() {
+                this.isAnimating = true;
+                this.animationStartTime = Date.now();
+                this.gradientProgress = 0;
+                this.isGlowing = true;
+                this.glowIntensity = 1;
+                this.pulsatePhase = 0;
+                addDebugEntry('Wire ' + this.id + ' animation started (gradient + glow)', 'data-flow');
+            }
+
+            // Stop animation (remove gradient and glow)
+            stopAnimation() {
+                this.isAnimating = false;
+                this.gradientProgress = 0;
+                this.isGlowing = false;
+                this.glowIntensity = 0;
+                this.pulsatePhase = 0;
+                addDebugEntry('Wire ' + this.id + ' animation stopped', 'data-flow');
+            }
+
+            // Update animation state
+            updateAnimation() {
+                if (!this.isAnimating) return;
+
+                const elapsed = Date.now() - this.animationStartTime;
+
+                // Gradient progress: 0 to 1 over 800ms
+                this.gradientProgress = Math.min(1, elapsed / 800);
+
+                // Pulsating glow: 1 pulse per 3 seconds
+                this.pulsatePhase = (elapsed / 3000) % 1;
+                this.glowIntensity = 0.5 + 0.5 * Math.sin(this.pulsatePhase * Math.PI * 2);
+
+                // If gradient completed and glowing, keep animating
+                if (this.gradientProgress >= 1) {
+                    // Keep glowing
+                }
+            }
+
+            // Get the current color with gradient
+            getGradientColor(pointProgress, baseColor) {
+                if (!this.isAnimating || !this.enabled) return baseColor || this.color;
+
+                // Gradient from source color (blue) to target color (green)
+                const progress = this.gradientProgress;
+                const t = pointProgress * progress; // Only the progress part is colored
+
+                // Source color: blue-ish (#667eea)
+                const r1 = 102, g1 = 126, b1 = 234;
+                // Target color: green-ish (#2ecc71)
+                const r2 = 46, g2 = 204, b2 = 113;
+
+                // Mix based on position along the wire
+                const mix = t;
+                const r = Math.floor(r1 + (r2 - r1) * mix);
+                const g = Math.floor(g1 + (g2 - g1) * mix);
+                const b = Math.floor(b1 + (b2 - b1) * mix);
+
+                // Only apply gradient to the animated portion
+                if (pointProgress <= progress) {
+                    return `rgb(${r}, ${g}, ${b})`;
+                } else {
+                    return baseColor || this.color;
+                }
+            }
+
+            // Get glow intensity at a specific point
+            getGlowIntensityAtPoint(pointProgress) {
+                if (!this.isAnimating || !this.isGlowing || !this.enabled) return 0;
+
+                const progress = this.gradientProgress;
+                const glowWidth = 0.1;
+
+                // Only glow at the gradient front
+                const dist = Math.abs(pointProgress - progress);
+                if (dist < glowWidth) {
+                    const intensity = 1 - (dist / glowWidth);
+                    return intensity * this.glowIntensity;
+                }
+                return 0;
+            }
+
+            // Get the current color (for the whole wire, fallback)
+            getColor(isSelected) {
+                if (!this.enabled) return '#555555';
+                if (this.isAnimating) {
+                    // When fully animated, show green
+                    if (this.gradientProgress >= 1) {
+                        return '#2ecc71';
+                    }
+                    return this.color;
+                }
+                if (this.sameTypeHighlight && isSelected) return '#2ecc71';
+                if (this.partialMatchHighlight && isSelected) return '#3498db';
+                return isSelected ? this.selectedColor : this.color;
+            }
+
+            getWidth(isSelected) {
+                if (!this.enabled) return 1.5;
+                if (this.isAnimating && this.isGlowing) {
+                    return (isSelected ? this.selectedWidth : this.width) + 0.5;
+                }
+                if (this.sameTypeHighlight && isSelected) return 2.5;
+                if (this.partialMatchHighlight && isSelected) return 2.5;
+                return isSelected ? this.selectedWidth : this.width;
+            }
+
+            toJSON() {
+                return {
+                    id: this.id,
+                    from: this.from,
+                    to: this.to,
+                    fromPort: this.fromPort,
+                    toPort: this.toPort,
+                    fromPortId: this.fromPortId,
+                    toPortId: this.toPortId,
+                    wireClass: this.wireClass,
+                    enabled: this.enabled,
+                    properties: this.properties,
+                    color: this.color,
+                    selectedColor: this.selectedColor
+                };
+            }
+
+            static fromJSON(data) {
+                const wire = new Wire(data.from, data.to, data.fromPort, data.toPort);
+                wire.id = data.id || nextId++;
+                wire.fromPortId = data.fromPortId || null;
+                wire.toPortId = data.toPortId || null;
+                wire.wireClass = data.wireClass || 'standard';
+                wire.enabled = data.enabled !== undefined ? data.enabled : true;
+                wire.properties = data.properties || {};
+                wire.color = data.color || '#505050';
+                wire.selectedColor = data.selectedColor || '#888888';
+                return wire;
             }
         }
 
@@ -1933,7 +2298,7 @@
                 let outputHtml = '<div style="color:#2ecc71;">Test Result:</div>';
                 outputHtml += `<div style="color:#888;font-size:9px;">${node.name}: <span style="color:#c8c8c8;">${JSON.stringify(result.output)}</span></div>`;
                 if (result.stdout) {
-                    outputHtml += `<div style="color:#666;font-size:8px;">stdout: ${result.stdout}</div>`;
+                    outputHtml += `<div style="color:#f39c12;font-size:8px;">stdout: ${result.stdout}</div>`;
                 }
                 document.getElementById('liveState').innerHTML = outputHtml;
             } else {
@@ -2179,81 +2544,7 @@
         }
 
         // ================================================================
-        // WIRE CLASS
-        // ================================================================
-
-        class Wire {
-            constructor(fromId, toId, fromPortName, toPortName) {
-                this.id = nextId++;
-                this.from = fromId;
-                this.to = toId;
-                this.fromPort = fromPortName;
-                this.toPort = toPortName;
-                this.fromPortId = null;
-                this.toPortId = null;
-                this.isWire = true;
-                this.wireClass = 'standard';
-                this.enabled = true;
-                this.properties = {};
-                this.color = '#505050';
-                this.selectedColor = '#888888';
-                this.width = 1.5;
-                this.selectedWidth = 2.5;
-                this.fromPortObj = null;
-                this.toPortObj = null;
-                this.sameTypeHighlight = false;
-                this.partialMatchHighlight = false;
-            }
-
-            getColor(isSelected) {
-                if (!this.enabled) {
-                    return '#555555';
-                }
-                if (this.sameTypeHighlight && isSelected) return '#2ecc71';
-                if (this.partialMatchHighlight && isSelected) return '#3498db';
-                return isSelected ? this.selectedColor : this.color;
-            }
-
-            getWidth(isSelected) {
-                if (!this.enabled) return 1.5;
-                if (this.sameTypeHighlight && isSelected) return 2.5;
-                if (this.partialMatchHighlight && isSelected) return 2.5;
-                return isSelected ? this.selectedWidth : this.width;
-            }
-
-            toJSON() {
-                return {
-                    id: this.id,
-                    from: this.from,
-                    to: this.to,
-                    fromPort: this.fromPort,
-                    toPort: this.toPort,
-                    fromPortId: this.fromPortId,
-                    toPortId: this.toPortId,
-                    wireClass: this.wireClass,
-                    enabled: this.enabled,
-                    properties: this.properties,
-                    color: this.color,
-                    selectedColor: this.selectedColor
-                };
-            }
-
-            static fromJSON(data) {
-                const wire = new Wire(data.from, data.to, data.fromPort, data.toPort);
-                wire.id = data.id || nextId++;
-                wire.fromPortId = data.fromPortId || null;
-                wire.toPortId = data.toPortId || null;
-                wire.wireClass = data.wireClass || 'standard';
-                wire.enabled = data.enabled !== undefined ? data.enabled : true;
-                wire.properties = data.properties || {};
-                wire.color = data.color || '#505050';
-                wire.selectedColor = data.selectedColor || '#888888';
-                return wire;
-            }
-        }
-
-        // ================================================================
-        // NODE CLASSES - Updated with Python-compatible names
+        // NODE CLASSES
         // ================================================================
 
         class BaseNode {
@@ -2287,7 +2578,6 @@
                 this.mismatchDetails = [];
                 this.description = this._getDescription();
                 this.codeEditorOpen = false;
-                // Generate code after ports are created
                 this.code = 'def ' + this._sanitizeName(this.name) + '():\n    return {}';
             }
 
@@ -2302,32 +2592,18 @@
 
             _generateDefaultCode() {
                 const funcName = this._sanitizeName(this.name);
-                const inputNames = this.inputs.map(p => p.name).join(', ');
                 const inputDefaults = this.inputs.map(p => p.name + '=None').join(', ');
+                const inputNames = this.inputs.map(p => p.name).join(', ');
+                const outputNames = this.outputs.map(p => p.name).join(', ');
 
                 let code = `# Node: ${this.name}\n`;
                 code += `# Class: ${this.nodeClass}\n`;
                 code += `# Inputs: ${inputNames || 'none'}\n`;
-                code += `# Outputs: ${this.outputs.map(p => p.name).join(', ') || 'none'}\n\n`;
+                code += `# Outputs: ${outputNames || 'none'}\n\n`;
 
                 code += `def ${funcName}(${inputDefaults || 'data'}):\n`;
-                code += `    """\n`;
-                code += `    Process function for ${this.name}.\n`;
-                code += `    Inputs: ${inputNames || 'data'}\n`;
-                code += `    Outputs: ${this.outputs.map(p => p.name).join(', ') || 'none'}\n`;
-                code += `    """\n`;
                 code += `    # TODO: Implement your logic here\n`;
-                code += `    # Example: pass through inputs to outputs\n\n`;
-                code += `    print(f"Processing ${this.name}: ${inputNames || 'data'}")\n\n`;
-                code += `    result = {}\n`;
-                if (this.outputs.length > 0) {
-                    for (let p of this.outputs) {
-                        code += `    result["${p.name}"] = ${p.name}\n`;
-                    }
-                } else {
-                    code += `    # No outputs defined\n`;
-                }
-                code += `    return result`;
+                code += `    return {}`;
 
                 return code;
             }
@@ -2358,7 +2634,6 @@
                 this.inputs.push(port);
                 this._sortPorts();
                 this._updateHeight();
-                // Regenerate code after port changes
                 this.code = this._generateDefaultCode();
                 return port;
             }
@@ -2376,7 +2651,6 @@
                 this.outputs.push(port);
                 this._sortPorts();
                 this._updateHeight();
-                // Regenerate code after port changes
                 this.code = this._generateDefaultCode();
                 return port;
             }
@@ -2640,7 +2914,6 @@
                     node._updateDominantLineColor();
                 }
                 node._updateHeight();
-                // Regenerate code after ports are restored
                 node.code = node._generateDefaultCode();
                 return node;
             }
@@ -3066,6 +3339,7 @@
                 super(name, x, y, 'empty');
                 this.description = 'Non-functional placeholder with no color propagation. Inputs and outputs are capacity 3.';
                 this.setLineColor('#888888');
+                this.lineColor = '#888888';
                 this.bodyColor = '#2a2a2a';
                 this.selectedBodyColor = '#333333';
                 this.borderColor = '#444444';
@@ -3995,8 +4269,10 @@
                 this.selectionEndY = 0;
                 this.lastContextMenuPos = { x: 0, y: 0 };
                 this.connectedPorts = new Set();
+                this.animationFrame = null;
                 this.setupEvents();
                 this.resize();
+                this.startAnimationLoop();
             }
 
             setupEvents() {
@@ -4008,6 +4284,39 @@
                 document.addEventListener('keydown', this.onKeyDown.bind(this));
                 document.addEventListener('keyup', this.onKeyUp.bind(this));
                 window.addEventListener('resize', this.resize.bind(this));
+            }
+
+            startAnimationLoop() {
+                const animate = () => {
+                    let needsUpdate = false;
+                    let anyAnimating = false;
+
+                    // Update all wire animations
+                    for (let id in this.graph.wires) {
+                        const wire = this.graph.wires[id];
+                        if (wire.isAnimating) {
+                            wire.updateAnimation();
+                            needsUpdate = true;
+                            anyAnimating = true;
+                        }
+                    }
+
+                    // Only render if there are animations
+                    if (needsUpdate) {
+                        this.render();
+                    }
+
+                    // Continue loop if any animations are still active
+                    if (anyAnimating) {
+                        this.animationFrame = requestAnimationFrame(animate);
+                    } else {
+                        // Check again after a short delay
+                        setTimeout(() => {
+                            this.animationFrame = requestAnimationFrame(animate);
+                        }, 100);
+                    }
+                };
+                this.animationFrame = requestAnimationFrame(animate);
             }
 
             resize() {
@@ -4150,6 +4459,14 @@
             }
 
             render() {
+                // Update animations
+                for (let id in this.graph.wires) {
+                    const wire = this.graph.wires[id];
+                    if (wire.isAnimating) {
+                        wire.updateAnimation();
+                    }
+                }
+
                 const w = this.canvas.width;
                 const h = this.canvas.height;
                 const ctx = this.ctx;
@@ -4755,56 +5072,115 @@
                 const isIdentical = wire.sameTypeHighlight && isSelected;
                 const isApproximated = wire.partialMatchHighlight && isSelected;
                 const isEnabled = wire.enabled;
+                const isAnimating = wire.isAnimating;
+
+                // Determine base color and width
+                let baseColor = wire.color;
+                let baseWidth = wire.width;
 
                 if (!isEnabled) {
-                    ctx.setLineDash([6, 4]);
-                } else {
-                    ctx.setLineDash([]);
-                }
-
-                let color = wire.getColor(isSelected);
-                let width = wire.getWidth(isSelected);
-
-                if (!isEnabled) {
-                    if (isSelected) {
-                        color = '#777777';
-                    } else {
-                        color = '#555555';
-                    }
-                    width = 1.5;
-                    if (isIdentical) {
-                        color = '#2ecc71';
-                    } else if (isApproximated) {
-                        color = '#3498db';
-                    }
+                    baseColor = '#555555';
+                    baseWidth = 1.5;
+                    if (isIdentical) baseColor = '#2ecc71';
+                    else if (isApproximated) baseColor = '#3498db';
                 } else if (isDummy) {
-                    color = '#888888';
-                    width = 1.5;
+                    baseColor = '#888888';
+                    baseWidth = 1.5;
                 } else if (isIdentical) {
-                    color = '#2ecc71';
-                    width = 2;
+                    baseColor = '#2ecc71';
+                    baseWidth = 2;
                 } else if (isApproximated) {
-                    color = '#3498db';
-                    width = 2;
+                    baseColor = '#3498db';
+                    baseWidth = 2;
                 } else if (portsMatch && isSelected) {
-                    color = '#f39c12';
-                    width = 2;
+                    baseColor = '#f39c12';
+                    baseWidth = 2;
                 }
 
-                ctx.strokeStyle = color;
-                ctx.lineWidth = width;
-                ctx.beginPath();
-                ctx.moveTo(fromPos.x, fromPos.y);
+                // Calculate bezier control points
                 const cp1x = fromPos.x + (toPos.x - fromPos.x) * 0.5;
                 const cp1y = fromPos.y;
                 const cp2x = toPos.x - (toPos.x - fromPos.x) * 0.5;
                 const cp2y = toPos.y;
-                ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, toPos.x, toPos.y);
-                ctx.stroke();
 
-                ctx.setLineDash([]);
+                // Draw the wire with gradient
+                if (isAnimating && isEnabled && !isDummy) {
+                    // Draw base wire with gradient
+                    const steps = 50;
+                    ctx.setLineDash([]);
 
-                if (isEnabled && !isDummy) {
+                    for (let i = 0; i < steps; i++) {
+                        const t1 = i / steps;
+                        const t2 = (i + 1) / steps;
+                        const p1x = this.bezierPoint(fromPos.x, cp1x, cp2x, toPos.x, t1);
+                        const p1y = this.bezierPoint(fromPos.y, cp1y, cp2y, toPos.y, t1);
+                        const p2x = this.bezierPoint(fromPos.x, cp1x, cp2x, toPos.x, t2);
+                        const p2y = this.bezierPoint(fromPos.y, cp1y, cp2y, toPos.y, t2);
+
+                        const color = wire.getGradientColor(t1, baseColor);
+                        ctx.strokeStyle = color;
+                        ctx.lineWidth = wire.getWidth(isSelected);
+                        ctx.beginPath();
+                        ctx.moveTo(p1x, p1y);
+                        ctx.lineTo(p2x, p2y);
+                        ctx.stroke();
+                    }
+
+                    // Draw glow at gradient front
+                    const progress = wire.gradientProgress;
+                    const glowIntensity = wire.getGlowIntensityAtPoint(progress);
+                    if (glowIntensity > 0.1) {
+                        const glowX = this.bezierPoint(fromPos.x, cp1x, cp2x, toPos.x, progress);
+                        const glowY = this.bezierPoint(fromPos.y, cp1y, cp2y, toPos.y, progress);
+
+                        const glowRadius = 6 + 4 * glowIntensity;
+
+                        const gradient = ctx.createRadialGradient(glowX, glowY, 0, glowX, glowY, glowRadius);
+                        gradient.addColorStop(0, `rgba(102, 126, 234, ${0.8 * glowIntensity})`);
+                        gradient.addColorStop(0.3, `rgba(102, 126, 234, ${0.4 * glowIntensity})`);
+                        gradient.addColorStop(1, `rgba(102, 126, 234, 0)`);
+                        ctx.fillStyle = gradient;
+                        ctx.beginPath();
+                        ctx.arc(glowX, glowY, glowRadius, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+
+                    // If gradient completed, add pulsating glow along the wire
+                    if (wire.gradientProgress >= 1) {
+                        const glowIntensity2 = wire.glowIntensity;
+                        if (glowIntensity2 > 0.3) {
+                            ctx.shadowBlur = 3 * glowIntensity2;
+                            ctx.shadowColor = `rgba(46, 204, 113, ${0.2 * glowIntensity2})`;
+                            ctx.strokeStyle = `rgba(46, 204, 113, ${0.1 * glowIntensity2})`;
+                            ctx.lineWidth = wire.getWidth(isSelected) + 4 * glowIntensity2;
+                            ctx.beginPath();
+                            ctx.moveTo(fromPos.x, fromPos.y);
+                            ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, toPos.x, toPos.y);
+                            ctx.stroke();
+                            ctx.shadowBlur = 0;
+                        }
+                    }
+                } else {
+                    // Draw normal wire
+                    ctx.shadowBlur = 0;
+                    ctx.strokeStyle = baseColor;
+                    ctx.lineWidth = isAnimating ? wire.getWidth(isSelected) : baseWidth;
+
+                    if (!isEnabled) {
+                        ctx.setLineDash([6, 4]);
+                    } else {
+                        ctx.setLineDash([]);
+                    }
+
+                    ctx.beginPath();
+                    ctx.moveTo(fromPos.x, fromPos.y);
+                    ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, toPos.x, toPos.y);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+                }
+
+                // Add glow effects for matches (only when not animating)
+                if (isEnabled && !isDummy && !isAnimating) {
                     if (portsMatch && isSelected && !isIdentical && !isApproximated) {
                         ctx.shadowBlur = 15;
                         ctx.shadowColor = 'rgba(243, 156, 18, 0.2)';
@@ -5757,19 +6133,30 @@
             graph = new Graph();
             renderer = new Renderer(document.getElementById('canvas'), graph);
 
-            const n1 = graph.addNode('StandardNode1', 80, 150, 'standard');
-            n1.setLineColor('#ff6b6b');
+            // Create first empty node
+            const n1 = graph.addNode('EmptyNode1', 80, 150, 'empty');
+            n1.setLineColor('#888888');
+            n1.lineColor = '#888888';
+            n1.code = `def EmptyNode1():
+    return {"out1": 10, "out2": 30}`;
 
-            const n2 = graph.addNode('StandardNode2', 350, 150, 'standard');
-            n2.setLineColor('#ff6b6b');
+            // Create second empty node
+            const n2 = graph.addNode('EmptyNode2', 350, 150, 'empty');
+            n2.setLineColor('#888888');
+            n2.lineColor = '#888888';
+            n2.code = `def EmptyNode2(in1=0, in2=0):
+    result = in1 + in2
+    print(f"Result: {result}")
+    return {}`;
 
-            const n3 = graph.addNode('DominantNode1', 80, 300, 'dominant');
-            const n4 = graph.addNode('DominantNode2', 350, 300, 'dominant');
+            // Connect them: out1 -> in1, out2 -> in2
+            const out1 = n1.outputs.find(p => p.name === 'out1');
+            const out2 = n1.outputs.find(p => p.name === 'out2');
+            const in1 = n2.inputs.find(p => p.name === 'in1');
+            const in2 = n2.inputs.find(p => p.name === 'in2');
 
-            graph.connect(1, 2, 'out1', 'in1');
-            graph.connect(1, 2, 'out2', 'in2');
-            graph.connect(3, 4, 'out1', 'in1');
-            graph.connect(3, 4, 'out2', 'in2');
+            graph.connect(n1.id, n2.id, out1, in1);
+            graph.connect(n1.id, n2.id, out2, in2);
 
             renderer.render();
             updateLiveState();
@@ -5821,7 +6208,7 @@
             document.getElementById('status').innerHTML = 'Ready';
 
             setupResizers();
-            addDebugEntry('Application initialized with 4 sample nodes', 'success');
+            addDebugEntry('Application initialized with 2 empty nodes ready for execution', 'success');
         }
 
         // ================================================================
@@ -5918,7 +6305,16 @@
             if (nodeClass !== 'empty' && nodeClass !== 'dominant') {
                 const lineColors = ['#ff6b6b', '#4ecdc4', '#ffe66d', '#a29bfe', '#fd79a8', '#00b894'];
                 node.setLineColor(lineColors[node.id % lineColors.length]);
+            } else if (nodeClass === 'empty') {
+                node.setLineColor('#888888');
+                node.lineColor = '#888888';
+                const funcName = node._sanitizeName(node.name);
+                const inputDefaults = node.inputs.map(p => p.name + '=None').join(', ');
+                node.code = `def ${funcName}(${inputDefaults}):
+    # TODO: Implement your logic here
+    return {}`;
             }
+
             node.snapEnabled = true;
             graph.selectedNodes = [node.id];
             graph.selectedWires = [];
@@ -6811,7 +7207,6 @@
             if (node) {
                 const oldName = node.name;
                 node.name = value;
-                // Update code with new function name
                 node.code = node._generateDefaultCode();
                 addDebugEntry('Renamed node from "' + oldName + '" to "' + value + '" (ID: ' + id + ')', 'node');
                 renderer.render();
