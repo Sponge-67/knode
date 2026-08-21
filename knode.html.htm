@@ -329,16 +329,53 @@
         }
         .modal h2 { color: #888; margin-bottom: 10px; font-weight: 300; letter-spacing: 1px; font-size: 15px; }
         .modal label { display: block; margin: 6px 0 3px; font-size: 10px; color: #666; }
-        .modal select, .modal textarea { width: 100%; padding: 5px 8px; background: #1a1a1a; border: 1px solid #333; border-radius: 3px; color: #c8c8c8; font-size: 11px; }
-        .modal textarea { font-family: 'Courier New', monospace; font-size: 10px; min-height: 100px; resize: vertical; }
-        .modal .modal-buttons { display: flex; gap: 6px; margin-top: 10px; }
-        .modal .modal-buttons button { flex: 1; padding: 5px; border: none; border-radius: 3px; cursor: pointer; font-size: 11px; transition: all 0.2s; }
+        .modal select, .modal textarea {
+            width: 100%;
+            padding: 5px 8px;
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 3px;
+            color: #c8c8c8;
+            font-size: 11px;
+        }
+        .modal textarea {
+            font-family: 'Courier New', monospace;
+            font-size: 10px;
+            min-height: 100px;
+            resize: vertical;
+        }
+        .modal .modal-buttons {
+            display: flex;
+            gap: 6px;
+            margin-top: 10px;
+        }
+        .modal .modal-buttons button {
+            flex: 1;
+            padding: 5px;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 11px;
+            transition: all 0.2s;
+        }
         .modal .modal-buttons .btn-primary { background: #444; color: #c8c8c8; }
         .modal .modal-buttons .btn-primary:hover { background: #555; }
         .modal .modal-buttons .btn-secondary { background: #333; color: #c8c8c8; }
         .modal .modal-buttons .btn-secondary:hover { background: #444; }
-        .modal .file-input-wrapper { display: flex; gap: 6px; align-items: center; }
-        .modal .file-input-wrapper input[type="file"] { flex: 1; padding: 3px; background: #1a1a1a; border: 1px solid #333; border-radius: 3px; color: #c8c8c8; font-size: 10px; }
+        .modal .file-input-wrapper {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+        }
+        .modal .file-input-wrapper input[type="file"] {
+            flex: 1;
+            padding: 3px;
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 3px;
+            color: #c8c8c8;
+            font-size: 10px;
+        }
 
         .debug-log {
             font-family: 'Consolas', monospace;
@@ -547,7 +584,6 @@
                 <option value="json">JSON</option>
                 <option value="yaml">YAML</option>
                 <option value="xml">XML</option>
-                <option value="hdf5">HDF5</option>
             </select>
             <label>Preview</label>
             <textarea id="exportData" readonly></textarea>
@@ -567,11 +603,10 @@
                 <option value="json">JSON</option>
                 <option value="yaml">YAML</option>
                 <option value="xml">XML</option>
-                <option value="hdf5">HDF5</option>
             </select>
             <label>File</label>
             <div class="file-input-wrapper">
-                <input type="file" id="importFile" accept=".json,.yaml,.yml,.xml,.hdf5,.h5">
+                <input type="file" id="importFile" accept=".json,.yaml,.yml,.xml">
             </div>
             <label>Or paste data</label>
             <textarea id="importData" placeholder="Paste data here..."></textarea>
@@ -955,6 +990,42 @@
         }
 
         // ================================================================
+        // SAVE / LOAD STATE (localStorage)
+        // ================================================================
+
+        const STORAGE_KEY = 'node_system_state';
+
+        function saveStateToStorage() {
+            try {
+                const data = graph.toJSON();
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+            } catch (e) {
+                console.error('Failed to save state:', e);
+            }
+        }
+
+        function loadStateFromStorage() {
+            try {
+                const stored = localStorage.getItem(STORAGE_KEY);
+                if (stored) {
+                    const data = JSON.parse(stored);
+                    graph.fromJSON(data);
+                    return true;
+                }
+            } catch (e) {
+                console.error('Failed to load state:', e);
+            }
+            return false;
+        }
+
+        // Override saveState to also save to localStorage
+        const originalSaveState = saveState;
+        saveState = function() {
+            originalSaveState();
+            saveStateToStorage();
+        };
+
+        // ================================================================
         // UNDO/REDO
         // ================================================================
 
@@ -1005,6 +1076,7 @@
                     const toNode = graph.nodes[wire.to];
                     if (fromNode && toNode) {
                         let fromPort = null, toPort = null;
+                        // Find from port
                         if (wire.fromPortId) {
                             for (let port of fromNode.outputs) { if (port.id === wire.fromPortId) { fromPort = port; break; } }
                             if (!fromPort) { for (let port of fromNode.dummyPorts) { if (port.id === wire.fromPortId) { fromPort = port; break; } } }
@@ -1013,6 +1085,7 @@
                             for (let port of fromNode.outputs) { if (port.name === wire.fromPort) { fromPort = port; break; } }
                             if (!fromPort) { for (let port of fromNode.dummyPorts) { if (port.name === wire.fromPort) { fromPort = port; break; } } }
                         }
+                        // Find to port
                         if (wire.toPortId) {
                             for (let port of toNode.inputs) { if (port.id === wire.toPortId) { toPort = port; break; } }
                             if (!toPort) { for (let port of toNode.dummyPorts) { if (port.id === wire.toPortId) { toPort = port; break; } } }
@@ -1026,9 +1099,16 @@
                             wire.toPortObj = toPort;
                             wire.fromPortId = fromPort.id;
                             wire.toPortId = toPort.id;
-                            if (!fromPort.connections.includes(wire.id)) fromPort.connections.push(wire.id);
-                            if (!toPort.connections.includes(wire.id)) toPort.connections.push(wire.id);
-                            if (toPort.isInput) toPort.number_of_inputs = toPort.connections.length;
+                            // Only add to connections if not already present
+                            if (!fromPort.connections.includes(wire.id)) {
+                                fromPort.connections.push(wire.id);
+                            }
+                            if (!toPort.connections.includes(wire.id)) {
+                                toPort.connections.push(wire.id);
+                            }
+                            if (toPort.isInput) {
+                                toPort.number_of_inputs = toPort.connections.length;
+                            }
                         }
                     }
                     graph.wires[wire.id] = wire;
@@ -1048,10 +1128,23 @@
                 if (snapshot.sameTypeSelected !== undefined) graph.sameTypeSelected = snapshot.sameTypeSelected;
                 if (snapshot.wireSameTypeSelected !== undefined) graph.wireSameTypeSelected = snapshot.wireSameTypeSelected;
                 if (snapshot.mismatches) graph.mismatches = snapshot.mismatches;
+                // Only update dominant colors if the saved color is default grey
                 for (let id in graph.nodes) {
                     const node = graph.nodes[id];
-                    if (node.nodeClass === 'dominant') { node._updateInputColorsFromConnections(); node._updateDominantLineColor(); }
-                    else if (node.nodeClass === 'standard' && node._updateDominantAlienInputs) { node._updateDominantAlienInputs(); }
+                    const savedNode = snapshot.nodes[id];
+                    if (node.nodeClass === 'dominant') {
+                        // If saved color is not default, we assume user set it manually, so skip auto-update
+                        if (savedNode && savedNode.lineColor && savedNode.lineColor !== '#888888') {
+                            // Keep the saved color, do not recalc
+                            node.lineColor = savedNode.lineColor;
+                            node.gradientColor = lerpColor(savedNode.lineColor, node.bodyColor, 0.5);
+                        } else {
+                            node._updateInputColorsFromConnections();
+                            node._updateDominantLineColor();
+                        }
+                    } else if (node.nodeClass === 'standard' && node._updateDominantAlienInputs) {
+                        node._updateDominantAlienInputs();
+                    }
                 }
                 graph.checkSameTypeSelection();
                 graph.checkWireSameTypeSelection();
@@ -1083,6 +1176,7 @@
                 if (undoStack.length > MAX_UNDO) undoStack.shift();
                 redoStack = [];
                 updateUndoButtons();
+                saveStateToStorage();
             } catch (e) { console.error('Save state error:', e); }
         }
 
@@ -1129,7 +1223,6 @@
 
             addDebugEntry('Refreshing node "' + node.name + '" (ID: ' + id + ')', 'info');
 
-            // If EmptyNode2, stop pulsating on incoming wires
             if (node.name === 'EmptyNode2') {
                 const connections = graph.getNodeConnections(id);
                 for (let wire of connections) {
@@ -1714,7 +1807,7 @@
                     }
                 }
                 node._sortPorts();
-                if (node.nodeClass === 'dominant') { node._updateInputColorsFromConnections(); node._updateDominantLineColor(); }
+                // Do not call dominant update here; will be called conditionally in restore loop
                 node._updateHeight();
                 node.code = node._generateDefaultCode();
                 return node;
@@ -2099,7 +2192,6 @@
                         wire.fromPortId === fromPort.id && wire.toPortId === toPort.id) return null;
                 }
 
-                // Determine animation colors based on node classes
                 let animColors = null;
                 if (fromNode.nodeClass === toNode.nodeClass) {
                     const classColors = {
@@ -2439,27 +2531,56 @@
                     const toNode = this.nodes[wire.to];
                     if (fromNode && toNode) {
                         let fromPort = null, toPort = null;
-                        for (let port of fromNode.outputs) { if (port.name === wire.fromPort && port.connections.includes(wire.to)) { fromPort = port; break; } }
-                        if (!fromPort) { for (let port of fromNode.dummyPorts) { if (port.name === wire.fromPort && port.connections.includes(wire.to)) { fromPort = port; break; } } }
-                        if (!fromPort) { for (let port of fromNode.outputs) { if (port.name === wire.fromPort && port.enabled) { fromPort = port; break; } } }
-                        if (!fromPort) { for (let port of fromNode.dummyPorts) { if (port.name === wire.fromPort && port.enabled) { fromPort = port; break; } } }
-                        for (let port of toNode.inputs) { if (port.name === wire.toPort && port.connections.includes(wire.from)) { toPort = port; break; } }
-                        if (!toPort) { for (let port of toNode.dummyPorts) { if (port.name === wire.toPort && port.connections.includes(wire.from)) { toPort = port; break; } } }
-                        if (!toPort) { for (let port of toNode.inputs) { if (port.name === wire.toPort && port.enabled) { toPort = port; break; } } }
-                        if (!toPort) { for (let port of toNode.dummyPorts) { if (port.name === wire.toPort && port.enabled) { toPort = port; break; } } }
+                        // Find from port
+                        if (wire.fromPortId) {
+                            for (let port of fromNode.outputs) { if (port.id === wire.fromPortId) { fromPort = port; break; } }
+                            if (!fromPort) { for (let port of fromNode.dummyPorts) { if (port.id === wire.fromPortId) { fromPort = port; break; } } }
+                        }
+                        if (!fromPort) {
+                            for (let port of fromNode.outputs) { if (port.name === wire.fromPort) { fromPort = port; break; } }
+                            if (!fromPort) { for (let port of fromNode.dummyPorts) { if (port.name === wire.fromPort) { fromPort = port; break; } } }
+                        }
+                        // Find to port
+                        if (wire.toPortId) {
+                            for (let port of toNode.inputs) { if (port.id === wire.toPortId) { toPort = port; break; } }
+                            if (!toPort) { for (let port of toNode.dummyPorts) { if (port.id === wire.toPortId) { toPort = port; break; } } }
+                        }
+                        if (!toPort) {
+                            for (let port of toNode.inputs) { if (port.name === wire.toPort) { toPort = port; break; } }
+                            if (!toPort) { for (let port of toNode.dummyPorts) { if (port.name === wire.toPort) { toPort = port; break; } } }
+                        }
                         if (fromPort && toPort) {
                             wire.fromPortObj = fromPort;
                             wire.toPortObj = toPort;
-                            if (!fromPort.connections.includes(wire.to)) fromPort.connections.push(wire.to);
-                            if (!toPort.connections.includes(wire.from)) toPort.connections.push(wire.from);
-                            if (toPort.isInput) toPort.number_of_inputs = toPort.connections.length;
+                            wire.fromPortId = fromPort.id;
+                            wire.toPortId = toPort.id;
+                            if (!fromPort.connections.includes(wire.id)) {
+                                fromPort.connections.push(wire.id);
+                            }
+                            if (!toPort.connections.includes(wire.id)) {
+                                toPort.connections.push(wire.id);
+                            }
+                            if (toPort.isInput) {
+                                toPort.number_of_inputs = toPort.connections.length;
+                            }
                         }
                     }
                 }
                 for (let id in this.nodes) {
                     const node = this.nodes[id];
-                    if (node.nodeClass === 'dominant') { node._updateInputColorsFromConnections(); node._updateDominantLineColor(); }
-                    else if (node.nodeClass === 'standard' && node._updateDominantAlienInputs) { node._updateDominantAlienInputs(); }
+                    if (node.nodeClass === 'dominant') {
+                        // Preserve saved color if not default
+                        const savedNode = data.nodes[id];
+                        if (savedNode && savedNode.lineColor && savedNode.lineColor !== '#888888') {
+                            node.lineColor = savedNode.lineColor;
+                            node.gradientColor = lerpColor(savedNode.lineColor, node.bodyColor, 0.5);
+                        } else {
+                            node._updateInputColorsFromConnections();
+                            node._updateDominantLineColor();
+                        }
+                    } else if (node.nodeClass === 'standard' && node._updateDominantAlienInputs) {
+                        node._updateDominantAlienInputs();
+                    }
                 }
                 addDebugEntry('Graph loaded with ' + Object.keys(this.nodes).length + ' nodes and ' + Object.keys(this.wires).length + ' wires', 'success');
                 saveState();
@@ -3475,7 +3596,6 @@
                 const node = this.getNodeAt(pos);
                 this.canvas.style.cursor = node ? 'grab' : 'default';
 
-                // Wire hover
                 const hoveredWireId = this.getWireAt(pos);
                 if (this._hoveredWire !== null && this._hoveredWire !== hoveredWireId) {
                     const prevWire = this.graph.wires[this._hoveredWire];
@@ -3966,7 +4086,6 @@
 
         function updateLiveState() {
             const container = document.getElementById('liveState');
-            // Build graph structure HTML
             let graphHtml = '';
             const nodeCount = Object.keys(graph.nodes).length;
             if (nodeCount === 0) { graphHtml = '<div style="color:#666;">No nodes</div>'; }
@@ -4058,7 +4177,6 @@
                 }
             }
 
-            // Combine with execution logs
             let fullHtml = graphHtml;
             if (executionLogs.length > 0) {
                 fullHtml += '<hr style="border-color:#333;margin:8px 0;">';
@@ -4066,7 +4184,6 @@
                 fullHtml += executionLogs.join('<hr style="border-color:#333;margin:4px 0;">');
             }
             container.innerHTML = fullHtml;
-            // Autoscroll to bottom
             container.scrollTop = container.scrollHeight;
         }
 
@@ -4123,7 +4240,6 @@
 
             let logHtml = '<div style="color:#88aadd;">▶ Execution Log:</div>';
 
-            // Collect upstream data
             for (let wire of connections) {
                 if (wire.to === nodeId) {
                     const fromNode = graph.nodes[wire.from];
@@ -4166,24 +4282,24 @@
             if (result && result.success) {
                 executionCache[nodeId] = result.output;
 
-                if (result.logs) {
+                if (result.logs && result.logs.length) {
                     for (let log of result.logs) {
                         logHtml += `<div style="color:#88aadd;font-size:8px;padding-left:8px;">  ${escapeHtml(log)}</div>`;
+                    }
+                } else {
+                    if (result.stdout) {
+                        logHtml += `<div style="color:#f39c12;font-size:8px;padding-left:8px;">  stdout: ${escapeHtml(result.stdout.trim())}</div>`;
                     }
                 }
 
                 logHtml += `<div style="color:#2ecc71;font-size:8px;padding-top:4px;">▶ ${node.name} executed → ${JSON.stringify(result.output)}</div>`;
-                if (result.stdout) {
-                    logHtml += `<div style="color:#f39c12;font-size:8px;white-space:pre-wrap;padding-left:8px;">${escapeHtml(result.stdout.trim())}</div>`;
-                }
 
-                // Animation control
                 if (node.name === 'EmptyNode1') {
                     for (let wire of connections) {
                         if (wire.from === nodeId) {
                             const wireObj = graph.wires[wire.id];
                             if (wireObj && wireObj.enabled) {
-                                wireObj.startAnimation(); // gradient travel
+                                wireObj.startAnimation();
                                 wireObj.setPulsating(false);
                                 logHtml += `<div style="color:#2ecc71;font-size:8px;padding-left:8px;">  ▶ Started gradient travel on wire ${wire.id}</div>`;
                             }
@@ -4236,7 +4352,6 @@
             saveState();
         }
 
-        // Internal function for upstream execution
         async function executeSingleNodeInternal(nodeId) {
             const node = graph.nodes[nodeId];
             if (!node) return { success: false };
@@ -4313,7 +4428,6 @@
                 await updateNodeCodeBackend(parseInt(id), node.code);
             }
 
-            // Start all animations
             for (let id in graph.wires) {
                 const wire = graph.wires[id];
                 if (wire.enabled) wire.startAnimation();
@@ -4327,7 +4441,6 @@
 
             const result = await response.json();
 
-            // Stop all animations
             for (let id in graph.wires) {
                 const wire = graph.wires[id];
                 wire.stopAnimation();
@@ -4343,6 +4456,13 @@
                     logHtml += '<div style="color:#88aadd;font-size:8px;margin-top:4px;">▶ Graph Logs:</div>';
                     for (let log of result.logs) {
                         logHtml += `<div style="color:#888;font-size:7px;padding-left:8px;">${escapeHtml(log)}</div>`;
+                    }
+                } else {
+                    for (let nodeId in result.outputs) {
+                        const stdout = result.stdout ? result.stdout[nodeId] : '';
+                        if (stdout) {
+                            logHtml += `<div style="color:#f39c12;font-size:7px;padding-left:8px;">stdout from node ${nodeId}: ${escapeHtml(stdout.trim())}</div>`;
+                        }
                     }
                 }
 
@@ -4401,32 +4521,31 @@
             graph = new Graph();
             renderer = new Renderer(document.getElementById('canvas'), graph);
 
-            const n1 = graph.addNode('EmptyNode1', 80, 150, 'empty');
-            n1.setLineColor('#888888');
-            n1.lineColor = '#888888';
-            n1.code = `def EmptyNode1():
-    # This node produces two outputs
-    return {"out1": 10, "out2": 30}`;
+            // Try to load saved state
+            if (!loadStateFromStorage()) {
+                // Default nodes
+                const n1 = graph.addNode('EmptyNode1', 80, 150, 'empty');
+                n1.setLineColor('#888888');
+                n1.lineColor = '#888888';
+                n1.code = `def EmptyNode1():\n    return {"out1": 10, "out2": 30}`;
 
-            const n2 = graph.addNode('EmptyNode2', 350, 150, 'empty');
-            n2.setLineColor('#888888');
-            n2.lineColor = '#888888';
-            n2.code = `def EmptyNode2(in1=0, in2=0):
-    result = in1 + in2
-    print(f"Result: {result}")
-    return {}`;
+                const n2 = graph.addNode('EmptyNode2', 350, 150, 'empty');
+                n2.setLineColor('#888888');
+                n2.lineColor = '#888888';
+                n2.code = `def EmptyNode2(in1=0, in2=0):\n    result = in1 + in2\n    print(f"Result: {result}")\n    return {}`;
 
-            const out1 = n1.outputs.find(p => p.name === 'out1');
-            const out2 = n1.outputs.find(p => p.name === 'out2');
-            const in1 = n2.inputs.find(p => p.name === 'in1');
-            const in2 = n2.inputs.find(p => p.name === 'in2');
-            graph.connect(n1.id, n2.id, out1, in1);
-            graph.connect(n1.id, n2.id, out2, in2);
+                const out1 = n1.outputs.find(p => p.name === 'out1');
+                const out2 = n1.outputs.find(p => p.name === 'out2');
+                const in1 = n2.inputs.find(p => p.name === 'in1');
+                const in2 = n2.inputs.find(p => p.name === 'in2');
+                graph.connect(n1.id, n2.id, out1, in1);
+                graph.connect(n1.id, n2.id, out2, in2);
 
-            const wires = Object.values(graph.wires);
-            if (wires.length >= 2) {
-                wires[0].setCurveType('bezier');
-                wires[1].setCurveType('linear');
+                const wires = Object.values(graph.wires);
+                if (wires.length >= 2) {
+                    wires[0].setCurveType('bezier');
+                    wires[1].setCurveType('linear');
+                }
             }
 
             renderer.render();
@@ -4473,6 +4592,7 @@
 
             setupResizers();
             addDebugEntry('Application initialized with 2 empty nodes.', 'success');
+            saveState();
         }
 
         // ================================================================
@@ -5215,7 +5335,6 @@
                     case 'json': output = JSON.stringify(data, null, 2); break;
                     case 'yaml': output = toYAML(data); break;
                     case 'xml': output = toXML(data); break;
-                    case 'hdf5': output = 'HDF5 export: ' + btoa(JSON.stringify(data)); break;
                 }
                 textarea.value = output;
             } catch (e) { textarea.value = 'Error: ' + e.message; }
@@ -5240,7 +5359,6 @@
                 case 'json': filename = 'nodes.json'; mimeType = 'application/json'; break;
                 case 'yaml': filename = 'nodes.yaml'; mimeType = 'text/yaml'; break;
                 case 'xml': filename = 'nodes.xml'; mimeType = 'application/xml'; break;
-                case 'hdf5': filename = 'nodes.hdf5'; mimeType = 'application/octet-stream'; break;
             }
             const blob = new Blob([data], { type: mimeType });
             const url = URL.createObjectURL(blob);
@@ -5266,7 +5384,6 @@
                         case 'json': jsonData = JSON.parse(data); break;
                         case 'yaml': jsonData = parseYAML(data); break;
                         case 'xml': jsonData = parseXML(data); break;
-                        case 'hdf5': jsonData = JSON.parse(atob(data)); break;
                     }
                     graph.fromJSON(jsonData);
                     renderer.render();
@@ -5286,11 +5403,9 @@
                 const file = fileInput.files[0];
                 const reader = new FileReader();
                 reader.onload = function(e) {
-                    if (format === 'hdf5') { const bytes = new Uint8Array(e.target.result); let binary = ''; for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]); processData(btoa(binary)); }
-                    else { processData(e.target.result); }
+                    processData(e.target.result);
                 };
-                if (format === 'hdf5') reader.readAsArrayBuffer(file);
-                else reader.readAsText(file);
+                reader.readAsText(file);
             } else if (textData) { processData(textData); }
             else {
                 document.getElementById('status').innerHTML = 'Please select a file or paste data';
@@ -5304,14 +5419,20 @@
             let result = '';
             if (Array.isArray(obj)) {
                 for (let item of obj) {
-                    if (typeof item === 'object' && item !== null) result += spaces + '- \n' + toYAML(item, indent + 1);
-                    else result += spaces + '- ' + String(item) + '\n';
+                    if (typeof item === 'object' && item !== null) {
+                        result += spaces + '- \n' + toYAML(item, indent + 1);
+                    } else {
+                        result += spaces + '- ' + String(item) + '\n';
+                    }
                 }
             } else if (typeof obj === 'object' && obj !== null) {
                 for (let key in obj) {
                     const value = obj[key];
-                    if (typeof value === 'object' && value !== null) result += spaces + key + ':\n' + toYAML(value, indent + 1);
-                    else result += spaces + key + ': ' + String(value) + '\n';
+                    if (typeof value === 'object' && value !== null) {
+                        result += spaces + key + ':\n' + toYAML(value, indent + 1);
+                    } else {
+                        result += spaces + key + ': ' + String(value) + '\n';
+                    }
                 }
             }
             return result;
@@ -5321,22 +5442,81 @@
             const lines = yaml.split('\n');
             const result = { version: '1.0', nodes: {}, wires: [] };
             let currentNode = null;
+            let currentPorts = null;
+            let currentDummyPorts = null;
             for (let line of lines) {
-                if (line.trim() === '') continue;
-                const content = line.trim();
-                if (content.startsWith('nextId:')) result.nextId = parseInt(content.split(':')[1].trim());
-                else if (content.startsWith('- id:')) {
-                    const id = parseInt(content.split(':')[1].trim());
-                    currentNode = { id: id, inputs: [], outputs: [] };
+                const trimmed = line.trim();
+                if (trimmed === '') continue;
+                if (trimmed.startsWith('nextId:')) {
+                    result.nextId = parseInt(trimmed.split(':')[1].trim());
+                } else if (trimmed.startsWith('- id:')) {
+                    const id = parseInt(trimmed.split(':')[1].trim());
+                    currentNode = { id: id, inputs: [], outputs: [], dummyPorts: [] };
                     result.nodes[id] = currentNode;
-                } else if (currentNode && content.startsWith('name:')) currentNode.name = content.split(':')[1].trim().replace(/"/g, '');
-                else if (currentNode && content.startsWith('x:')) currentNode.x = parseFloat(content.split(':')[1].trim());
-                else if (currentNode && content.startsWith('y:')) currentNode.y = parseFloat(content.split(':')[1].trim());
-                else if (currentNode && content.startsWith('code:')) currentNode.code = content.split(':')[1].trim().replace(/"/g, '');
-                else if (currentNode && content.startsWith('note:')) currentNode.note = content.split(':')[1].trim().replace(/"/g, '');
-                else if (content.startsWith('- from:')) {
-                    const parts = content.split(' ');
-                    result.wires.push({ from: parseInt(parts[1]), to: parseInt(parts[3]), fromPort: parts[5]?.replace(/"/g, '') || 'out1', toPort: parts[7]?.replace(/"/g, '') || 'in1' });
+                    currentPorts = null;
+                    currentDummyPorts = null;
+                } else if (currentNode && trimmed.startsWith('name:')) {
+                    currentNode.name = trimmed.split(':')[1].trim().replace(/"/g, '');
+                } else if (currentNode && trimmed.startsWith('x:')) {
+                    currentNode.x = parseFloat(trimmed.split(':')[1].trim());
+                } else if (currentNode && trimmed.startsWith('y:')) {
+                    currentNode.y = parseFloat(trimmed.split(':')[1].trim());
+                } else if (currentNode && trimmed.startsWith('code:')) {
+                    currentNode.code = trimmed.split(':')[1].trim().replace(/"/g, '');
+                } else if (currentNode && trimmed.startsWith('note:')) {
+                    currentNode.note = trimmed.split(':')[1].trim().replace(/"/g, '');
+                } else if (currentNode && trimmed.startsWith('noteExpanded:')) {
+                    currentNode.noteExpanded = trimmed.split(':')[1].trim() === 'true';
+                } else if (currentNode && trimmed.startsWith('lineColor:')) {
+                    currentNode.lineColor = trimmed.split(':')[1].trim().replace(/"/g, '');
+                } else if (currentNode && trimmed.startsWith('snapEnabled:')) {
+                    currentNode.snapEnabled = trimmed.split(':')[1].trim() !== 'false';
+                } else if (currentNode && trimmed.startsWith('nodeClass:')) {
+                    currentNode.nodeClass = trimmed.split(':')[1].trim().replace(/"/g, '');
+                } else if (currentNode && trimmed.startsWith('description:')) {
+                    currentNode.description = trimmed.split(':')[1].trim().replace(/"/g, '');
+                } else if (currentNode && trimmed.startsWith('inputs:')) {
+                    currentPorts = 'inputs';
+                } else if (currentNode && trimmed.startsWith('outputs:')) {
+                    currentPorts = 'outputs';
+                } else if (currentNode && trimmed.startsWith('dummyPorts:')) {
+                    currentPorts = 'dummyPorts';
+                } else if (currentNode && trimmed.startsWith('- name:')) {
+                    const name = trimmed.split(':')[1].trim().replace(/"/g, '');
+                    const port = { name: name };
+                    // we'll parse capacity, enabled, isAlien, etc. from subsequent lines
+                    // For simplicity, we'll use default values
+                    port.capacity = 3;
+                    port.enabled = true;
+                    port.isAlien = false;
+                    port.alienClass = null;
+                    port.color = null;
+                    port.isInput = currentPorts === 'inputs';
+                    port.isDummy = currentPorts === 'dummyPorts';
+                    if (currentPorts === 'inputs') {
+                        currentNode.inputs.push(port);
+                    } else if (currentPorts === 'outputs') {
+                        currentNode.outputs.push(port);
+                    } else if (currentPorts === 'dummyPorts') {
+                        currentNode.dummyPorts.push(port);
+                    }
+                }
+                // simple wire parsing
+                if (trimmed.startsWith('- from:')) {
+                    const parts = trimmed.split(' ');
+                    const wire = {
+                        from: parseInt(parts[1]),
+                        to: parseInt(parts[3]),
+                        fromPort: parts[5]?.replace(/"/g, '') || 'out1',
+                        toPort: parts[7]?.replace(/"/g, '') || 'in1'
+                    };
+                    // extract curveType if present
+                    const curveIdx = trimmed.indexOf('curveType:');
+                    if (curveIdx !== -1) {
+                        const curvePart = trimmed.substring(curveIdx).split(' ')[1];
+                        wire.curveType = curvePart.replace(/"/g, '').replace(',', '');
+                    }
+                    result.wires.push(wire);
                 }
             }
             return result;
@@ -5362,17 +5542,17 @@
                     xml += '      <description>' + (node.description || '') + '</description>\n';
                     xml += '      <inputs>\n';
                     for (let p of node.inputs || []) {
-                        xml += '        <port name="' + p.name + '" capacity="' + p.capacity + '" enabled="' + p.enabled + '" isAlien="' + (p.isAlien || false) + '" alienClass="' + (p.alienClass || '') + '"/>\n';
+                        xml += '        <port name="' + p.name + '" capacity="' + p.capacity + '" enabled="' + p.enabled + '" isAlien="' + (p.isAlien || false) + '" alienClass="' + (p.alienClass || '') + '" color="' + (p.color || '') + '" isInput="' + (p.isInput !== undefined ? p.isInput : true) + '" isDummy="' + (p.isDummy || false) + '"/>\n';
                     }
                     xml += '      </inputs>\n';
                     xml += '      <outputs>\n';
                     for (let p of node.outputs || []) {
-                        xml += '        <port name="' + p.name + '" capacity="' + p.capacity + '" enabled="' + p.enabled + '" isAlien="' + (p.isAlien || false) + '" alienClass="' + (p.alienClass || '') + '"/>\n';
+                        xml += '        <port name="' + p.name + '" capacity="' + p.capacity + '" enabled="' + p.enabled + '" isAlien="' + (p.isAlien || false) + '" alienClass="' + (p.alienClass || '') + '" color="' + (p.color || '') + '" isInput="' + (p.isInput !== undefined ? p.isInput : false) + '" isDummy="' + (p.isDummy || false) + '"/>\n';
                     }
                     xml += '      </outputs>\n';
                     xml += '      <dummyPorts>\n';
                     for (let p of node.dummyPorts || []) {
-                        xml += '        <port name="' + p.name + '" enabled="' + p.enabled + '" side="' + p.dummySide + '"/>\n';
+                        xml += '        <port name="' + p.name + '" enabled="' + p.enabled + '" side="' + p.dummySide + '" color="' + (p.color || '') + '"/>\n';
                     }
                     xml += '      </dummyPorts>\n';
                     xml += '    </node>\n';
@@ -5382,7 +5562,7 @@
             if (obj.wires) {
                 xml += '  <wires>\n';
                 for (let wire of obj.wires) {
-                    xml += '    <wire from="' + wire.from + '" to="' + wire.to + '" fromPort="' + wire.fromPort + '" toPort="' + wire.toPort + '" wireClass="' + (wire.wireClass || 'standard') + '" enabled="' + (wire.enabled !== false) + '" curveType="' + (wire.curveType || 'bezier') + '"/>\n';
+                    xml += '    <wire from="' + wire.from + '" to="' + wire.to + '" fromPort="' + wire.fromPort + '" toPort="' + wire.toPort + '" wireClass="' + (wire.wireClass || 'standard') + '" enabled="' + (wire.enabled !== false) + '" curveType="' + (wire.curveType || 'bezier') + '" color="' + (wire.color || '#505050') + '"/>\n';
                 }
                 xml += '  </wires>\n';
             }
@@ -5406,17 +5586,101 @@
                 const note = nodeEl.querySelector('note')?.textContent || '';
                 const snapEnabled = nodeEl.querySelector('snapEnabled')?.textContent !== 'false';
                 const description = nodeEl.querySelector('description')?.textContent || '';
-                result.nodes[id] = { id, name, x, y, nodeClass, lineColor, code, note, snapEnabled, description, inputs: [],
-                outputs: [], dummyPorts: [] };
+                result.nodes[id] = {
+                    id: id,
+                    name: name,
+                    x: x,
+                    y: y,
+                    nodeClass: nodeClass,
+                    lineColor: lineColor,
+                    code: code,
+                    note: note,
+                    snapEnabled: snapEnabled,
+                    description: description,
+                    inputs: [],
+                    outputs: [],
+                    dummyPorts: []
+                };
+                // Input ports
                 const inputEls = nodeEl.querySelectorAll('inputs port');
-                for (let p of inputEls) result.nodes[id].inputs.push({ name: p.getAttribute('name'), capacity: parseInt(p.getAttribute('capacity')) || 3, enabled: p.getAttribute('enabled') !== 'false', isAlien: p.getAttribute('isAlien') === 'true', alienClass: p.getAttribute('alienClass') || null });
+                for (let p of inputEls) {
+                    const isInput = p.getAttribute('isInput') !== 'false';
+                    const isDummy = p.getAttribute('isDummy') === 'true';
+                    if (isDummy) {
+                        result.nodes[id].dummyPorts.push({
+                            name: p.getAttribute('name'),
+                            enabled: p.getAttribute('enabled') !== 'false',
+                            side: p.getAttribute('side') || 'left',
+                            color: p.getAttribute('color') || null
+                        });
+                    } else {
+                        const port = {
+                            name: p.getAttribute('name'),
+                            capacity: parseInt(p.getAttribute('capacity')) || 3,
+                            enabled: p.getAttribute('enabled') !== 'false',
+                            isAlien: p.getAttribute('isAlien') === 'true',
+                            alienClass: p.getAttribute('alienClass') || null,
+                            color: p.getAttribute('color') || null,
+                            isInput: isInput,
+                            isDummy: false
+                        };
+                        if (isInput) {
+                            result.nodes[id].inputs.push(port);
+                        } else {
+                            result.nodes[id].outputs.push(port);
+                        }
+                    }
+                }
+                // Output ports (in case they are separate)
                 const outputEls = nodeEl.querySelectorAll('outputs port');
-                for (let p of outputEls) result.nodes[id].outputs.push({ name: p.getAttribute('name'), capacity: parseInt(p.getAttribute('capacity')) || 3, enabled: p.getAttribute('enabled') !== 'false', isAlien: p.getAttribute('isAlien') === 'true', alienClass: p.getAttribute('alienClass') || null });
+                for (let p of outputEls) {
+                    const isInput = p.getAttribute('isInput') !== 'false';
+                    const isDummy = p.getAttribute('isDummy') === 'true';
+                    if (isDummy) {
+                        // already handled, skip to avoid duplication
+                        continue;
+                    } else {
+                        const port = {
+                            name: p.getAttribute('name'),
+                            capacity: parseInt(p.getAttribute('capacity')) || 3,
+                            enabled: p.getAttribute('enabled') !== 'false',
+                            isAlien: p.getAttribute('isAlien') === 'true',
+                            alienClass: p.getAttribute('alienClass') || null,
+                            color: p.getAttribute('color') || null,
+                            isInput: isInput,
+                            isDummy: false
+                        };
+                        if (isInput) {
+                            result.nodes[id].inputs.push(port);
+                        } else {
+                            result.nodes[id].outputs.push(port);
+                        }
+                    }
+                }
+                // Dummy ports (if they are in a separate dummyPorts element)
                 const dummyEls = nodeEl.querySelectorAll('dummyPorts port');
-                for (let p of dummyEls) result.nodes[id].dummyPorts.push({ name: p.getAttribute('name'), enabled: p.getAttribute('enabled') !== 'false', side: p.getAttribute('side') || 'left' });
+                for (let p of dummyEls) {
+                    result.nodes[id].dummyPorts.push({
+                        name: p.getAttribute('name'),
+                        enabled: p.getAttribute('enabled') !== 'false',
+                        side: p.getAttribute('side') || 'left',
+                        color: p.getAttribute('color') || null
+                    });
+                }
             }
             const wireEls = doc.querySelectorAll('wire');
-            for (let wireEl of wireEls) result.wires.push({ from: parseInt(wireEl.getAttribute('from')), to: parseInt(wireEl.getAttribute('to')), fromPort: wireEl.getAttribute('fromPort'), toPort: wireEl.getAttribute('toPort'), wireClass: wireEl.getAttribute('wireClass') || 'standard', enabled: wireEl.getAttribute('enabled') !== 'false', curveType: wireEl.getAttribute('curveType') || 'bezier' });
+            for (let wireEl of wireEls) {
+                result.wires.push({
+                    from: parseInt(wireEl.getAttribute('from')),
+                    to: parseInt(wireEl.getAttribute('to')),
+                    fromPort: wireEl.getAttribute('fromPort'),
+                    toPort: wireEl.getAttribute('toPort'),
+                    wireClass: wireEl.getAttribute('wireClass') || 'standard',
+                    enabled: wireEl.getAttribute('enabled') !== 'false',
+                    curveType: wireEl.getAttribute('curveType') || 'bezier',
+                    color: wireEl.getAttribute('color') || '#505050'
+                });
+            }
             return result;
         }
 
