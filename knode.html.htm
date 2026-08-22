@@ -85,6 +85,12 @@
         .header-actions .redo-btn:hover { background: #444; }
         .header-actions .run-btn { background: #2a4a2a; border-color: #3a5a3a; color: #8fca8f; }
         .header-actions .run-btn:hover { background: #3a5a3a; color: #afffaf; }
+        .header-actions .info-btn {
+            background: #2a2a4a;
+            border-color: #3a3a5a;
+            color: #88aadd;
+        }
+        .header-actions .info-btn:hover { background: #3a3a5a; color: #aaccff; }
 
         .main { display: flex; flex: 1; overflow: hidden; flex-direction: column; }
         .middle-section { display: flex; flex: 1; overflow: hidden; }
@@ -214,7 +220,15 @@
             border: 1px solid #333;
         }
         .properties-panel .property-group .port-config input[type="checkbox"] { width: 14px; height: 14px; cursor: pointer; accent-color: #667eea; }
-        .properties-panel .property-group .port-config input { width: 35px; padding: 2px 4px; background: #1a1a1a; border: 1px solid #333; border-radius: 3px; color: #c8c8c8; font-size: 10px; }
+        .properties-panel .property-group .port-config input {
+            width: 65px;
+            padding: 2px 4px;
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 3px;
+            color: #c8c8c8;
+            font-size: 10px;
+        }
         .properties-panel .property-group .port-config .port-label { flex: 1; font-size: 10px; color: #888; }
         .properties-panel .property-group .port-config .port-color { width: 8px; height: 8px; border-radius: 50%; display: inline-block; border: 1px solid #333; flex-shrink: 0; }
         .properties-panel .property-group .port-config .port-disabled { opacity: 0.4; text-decoration: line-through; }
@@ -323,7 +337,7 @@
             border-radius: 6px;
             padding: 16px;
             min-width: 350px;
-            max-width: 450px;
+            max-width: 550px;
             max-height: 80vh;
             overflow-y: auto;
         }
@@ -479,6 +493,51 @@
 
         .wire-curve-select { background: #1a1a1a; border: 1px solid #333; border-radius: 3px; color: #c8c8c8; font-size: 9px; padding: 2px 4px; cursor: pointer; }
         .wire-curve-select:focus { outline: none; border-color: #666; }
+
+        .info-modal-content {
+            color: #c8c8c8;
+            font-size: 12px;
+            line-height: 1.6;
+        }
+        .info-modal-content h3 {
+            color: #88aadd;
+            margin: 12px 0 6px 0;
+            font-weight: 400;
+            font-size: 14px;
+        }
+        .info-modal-content h4 {
+            color: #667eea;
+            margin: 8px 0 4px 0;
+            font-weight: 400;
+            font-size: 13px;
+        }
+        .info-modal-content ul {
+            padding-left: 20px;
+            margin: 4px 0 8px 0;
+        }
+        .info-modal-content li {
+            margin: 2px 0;
+            color: #aaa;
+        }
+        .info-modal-content .rule-block {
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 4px;
+            padding: 8px 12px;
+            margin: 6px 0;
+            font-size: 11px;
+            color: #888;
+        }
+        .info-modal-content .rule-block strong {
+            color: #c8c8c8;
+        }
+        .info-modal-content code {
+            color: #88aadd;
+            background: #1a1a1a;
+            padding: 1px 4px;
+            border-radius: 2px;
+            font-size: 10px;
+        }
     </style>
 </head>
 <body>
@@ -500,6 +559,7 @@
             <button class="danger" onclick="deleteSelected()">Delete</button>
             <button id="snapToggle" onclick="toggleSnap()" style="background:#333;border:1px solid #444;color:#c8c8c8;cursor:pointer;font-size:10px;padding:3px 10px;border-radius:3px;transition:all 0.2s;">Snap</button>
             <button class="run-btn" onclick="executeGraphWithUI()" title="Execute the entire graph">▶ Run</button>
+            <button class="info-btn" onclick="showInfoModal()" title="View system information">ℹ Info</button>
         </div>
     </div>
 
@@ -613,6 +673,19 @@
             <div class="modal-buttons">
                 <button class="btn-primary" onclick="importState()">Import</button>
                 <button class="btn-secondary" onclick="closeModal('importModal')">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Info Modal -->
+    <div class="modal-overlay" id="infoModal">
+        <div class="modal" style="min-width:400px;max-width:700px;">
+            <h2>System Information</h2>
+            <div class="info-modal-content" id="infoContent">
+                <!-- populated by JavaScript -->
+            </div>
+            <div class="modal-buttons">
+                <button class="btn-primary" onclick="closeModal('infoModal')">Close</button>
             </div>
         </div>
     </div>
@@ -798,6 +871,11 @@
             }
 
             isRunning() { return this.isActive; }
+
+            updateColors(sourceColor, targetColor) {
+                if (sourceColor) this._sourceColor = sourceColor;
+                if (targetColor) this._targetColor = targetColor;
+            }
         }
 
         // ================================================================
@@ -816,6 +894,7 @@
                 this.isWire = true;
                 this.wireClass = 'standard';
                 this.enabled = true;
+                this.active = false;      // active state: when true, animation is running
                 this.properties = {};
                 this.color = '#505050';
                 this.selectedColor = '#888888';
@@ -842,6 +921,8 @@
                 this.gradientProgress = 0;
                 this.glowIntensity = 0;
                 this.pulsatePhase = 0;
+                this.active = true;
+                addDebugEntry('Wire ' + this.id + ' set to active', 'data-flow');
             }
 
             stopAnimation() {
@@ -850,6 +931,16 @@
                 this.gradientProgress = 0;
                 this.glowIntensity = 0;
                 this.pulsatePhase = 0;
+                this.active = false;
+                addDebugEntry('Wire ' + this.id + ' set to inactive', 'data-flow');
+            }
+
+            setActive(state) {
+                if (state && !this.active) {
+                    this.startAnimation();
+                } else if (!state && this.active) {
+                    this.stopAnimation();
+                }
             }
 
             setPulsating(state) {
@@ -927,6 +1018,14 @@
                 return false;
             }
 
+            updateAnimationColors(fromNode, toNode) {
+                const srcColor = fromNode ? hexToRgb(fromNode.lineColor) : null;
+                const tgtColor = toNode ? hexToRgb(toNode.lineColor) : null;
+                if (srcColor || tgtColor) {
+                    this.animation.updateColors(srcColor, tgtColor);
+                }
+            }
+
             toJSON() {
                 return {
                     id: this.id,
@@ -938,6 +1037,7 @@
                     toPortId: this.toPortId,
                     wireClass: this.wireClass,
                     enabled: this.enabled,
+                    active: this.active,
                     properties: this.properties,
                     color: this.color,
                     selectedColor: this.selectedColor,
@@ -952,6 +1052,7 @@
                 wire.toPortId = data.toPortId || null;
                 wire.wireClass = data.wireClass || 'standard';
                 wire.enabled = data.enabled !== undefined ? data.enabled : true;
+                wire.active = data.active || false;
                 wire.properties = data.properties || {};
                 wire.color = data.color || '#505050';
                 wire.selectedColor = data.selectedColor || '#888888';
@@ -1076,7 +1177,6 @@
                     const toNode = graph.nodes[wire.to];
                     if (fromNode && toNode) {
                         let fromPort = null, toPort = null;
-                        // Find from port
                         if (wire.fromPortId) {
                             for (let port of fromNode.outputs) { if (port.id === wire.fromPortId) { fromPort = port; break; } }
                             if (!fromPort) { for (let port of fromNode.dummyPorts) { if (port.id === wire.fromPortId) { fromPort = port; break; } } }
@@ -1085,7 +1185,6 @@
                             for (let port of fromNode.outputs) { if (port.name === wire.fromPort) { fromPort = port; break; } }
                             if (!fromPort) { for (let port of fromNode.dummyPorts) { if (port.name === wire.fromPort) { fromPort = port; break; } } }
                         }
-                        // Find to port
                         if (wire.toPortId) {
                             for (let port of toNode.inputs) { if (port.id === wire.toPortId) { toPort = port; break; } }
                             if (!toPort) { for (let port of toNode.dummyPorts) { if (port.id === wire.toPortId) { toPort = port; break; } } }
@@ -1099,7 +1198,6 @@
                             wire.toPortObj = toPort;
                             wire.fromPortId = fromPort.id;
                             wire.toPortId = toPort.id;
-                            // Only add to connections if not already present
                             if (!fromPort.connections.includes(wire.id)) {
                                 fromPort.connections.push(wire.id);
                             }
@@ -1128,14 +1226,11 @@
                 if (snapshot.sameTypeSelected !== undefined) graph.sameTypeSelected = snapshot.sameTypeSelected;
                 if (snapshot.wireSameTypeSelected !== undefined) graph.wireSameTypeSelected = snapshot.wireSameTypeSelected;
                 if (snapshot.mismatches) graph.mismatches = snapshot.mismatches;
-                // Only update dominant colors if the saved color is default grey
                 for (let id in graph.nodes) {
                     const node = graph.nodes[id];
                     const savedNode = snapshot.nodes[id];
                     if (node.nodeClass === 'dominant') {
-                        // If saved color is not default, we assume user set it manually, so skip auto-update
                         if (savedNode && savedNode.lineColor && savedNode.lineColor !== '#888888') {
-                            // Keep the saved color, do not recalc
                             node.lineColor = savedNode.lineColor;
                             node.gradientColor = lerpColor(savedNode.lineColor, node.bodyColor, 0.5);
                         } else {
@@ -1214,6 +1309,87 @@
         }
 
         // ================================================================
+        // INFO MODAL
+        // ================================================================
+
+        function showInfoModal() {
+            const container = document.getElementById('infoContent');
+            container.innerHTML = `
+                <h3>Node System — Core Logic</h3>
+
+                <h4>Object Hierarchy & Inheritance</h4>
+                <div class="rule-block">
+                    <strong>[(wire){port]node}</strong> — hierarchy · <code>()=0</code> <code>[]=1</code> <code>{}=2</code> · groups priorities<br>
+                    Object inherits properties from all higher‑priority groups it belongs to.
+                </div>
+
+                <h4>Type‑Defining Properties</h4>
+                <ul>
+                    <li><strong>Node:</strong> name, line_color, number_of_in_ports, number_of_out_ports, node_class</li>
+                    <li><strong>Port:</strong> name, input_capacity, output_capacity, enabled, color, isInput, isDummy</li>
+                    <li><strong>Wire:</strong> (inherits port properties via group <code>()</code>)</li>
+                </ul>
+
+                <h4>Classes</h4>
+                <ul>
+                    <li><code>empty</code> — non‑functional placeholder, grey line color, capacity 3</li>
+                    <li><code>standard</code> — non‑empty, capacity 3, random line color</li>
+                    <li><code>dominant</code> — color‑aware, capacity 2 input / 4 output, line color determined by rules</li>
+                </ul>
+
+                <h4>Matching & Types</h4>
+                <ul>
+                    <li><strong>Identical</strong> — all type‑defining properties match</li>
+                    <li><strong>Approximated</strong> — ports match but nodes differ</li>
+                    <li><strong>Mismatched</strong> — properties differ</li>
+                </ul>
+
+                <h4>Connection Rules</h4>
+                <ul>
+                    <li><strong>Native ports</strong> can only connect to the <strong>same node class</strong> (empty↔empty, standard↔standard, dominant↔dominant).</li>
+                    <li><strong>Alien ports</strong> and <strong>dummy ports</strong> bypass this restriction.</li>
+                    <li>Dummy ports can only connect to dummy ports.</li>
+                </ul>
+
+                <h4>Dominant Node Color Selection Pipeline</h4>
+                <div class="rule-block">
+                    <strong>From dominant node perspective, the pipeline of picking colors is:</strong>
+                    <ol style="margin:6px 0 6px 20px;color:#aaa;">
+                        <li><strong>Rule 5</strong> — Most connections of the same color (highest quantity).</li>
+                        <li><strong>Rule 1</strong> — If quantity is equal, pick the color with the highest capacity from the provider port.</li>
+                        <li><strong>Rule 6</strong> — If still tied, pick the color from the <strong>lowest port ID</strong> on the receiver node.</li>
+                        <li><strong>Rule 7</strong> — If the lowest‑ID port receives connections with <strong>different colors</strong>, pick the color from the <strong>lowest‑ID provider (source) port</strong>.</li>
+                    </ol>
+                    <em style="color:#888;">These rules are applied across all input ports, not per port (unless explicitly stated otherwise).</em>
+                </div>
+
+                <h4>Default Node Properties</h4>
+                <ul>
+                    <li><strong>Empty Node:</strong> 2 input ports (cap 3), 2 output ports (cap 3), grey line color.</li>
+                    <li><strong>Standard Node:</strong> 2 input ports (cap 3), 2 output ports (cap 3), random line color.</li>
+                    <li><strong>Dominant Node:</strong> 2 input ports (cap 2), 2 output ports (cap 4), line color determined by dominant rules, default input color grey.</li>
+                </ul>
+
+                <h4>Additional Dominant Rules</h4>
+                <ul>
+                    <li>Output color of dominant node transfers to input color of another dominant node if provider capacity is larger.</li>
+                    <li>Line color of dominant node equals the color that receives the most input connections.</li>
+                    <li>All output ports inherit their color from the node’s line color.</li>
+                    <li>Input ports with 0 connections are reset to grey.</li>
+                </ul>
+
+                <h4>Wire Animation</h4>
+                <ul>
+                    <li>When a wire is <strong>active</strong>, it shows a gradient travel from source to target and a pulsating glow.</li>
+                    <li>Activation can be manual (toggle in properties) or triggered by executing a connected node.</li>
+                    <li>Animation colors are derived from the <strong>line_color</strong> of the connected nodes.</li>
+                </ul>
+            `;
+            document.getElementById('infoModal').classList.add('active');
+            addDebugEntry('Opened info modal', 'info');
+        }
+
+        // ================================================================
         // NODE REFRESH
         // ================================================================
 
@@ -1251,6 +1427,15 @@
                 if (toNode && toNode.nodeClass === 'dominant') { toNode._updateInputColorsFromConnections(); toNode._updateDominantLineColor(); }
                 if (fromNode && fromNode.nodeClass === 'standard' && fromNode._updateDominantAlienInputs) { fromNode._updateDominantAlienInputs(); }
                 if (toNode && toNode.nodeClass === 'standard' && toNode._updateDominantAlienInputs) { toNode._updateDominantAlienInputs(); }
+            }
+
+            for (let id2 in graph.wires) {
+                const wire = graph.wires[id2];
+                const fromNode = graph.nodes[wire.from];
+                const toNode = graph.nodes[wire.to];
+                if (fromNode && toNode) {
+                    wire.updateAnimationColors(fromNode, toNode);
+                }
             }
 
             graph.checkSameTypeSelection();
@@ -1536,6 +1721,8 @@
                 this.description = this._getDescription();
                 this.codeEditorOpen = false;
                 this.code = 'def ' + this._sanitizeName(this.name) + '():\n    return {}';
+                this._ruleApplied = null;
+                this._ruleDescription = '';
             }
 
             _sanitizeName(name) {
@@ -1807,7 +1994,6 @@
                     }
                 }
                 node._sortPorts();
-                // Do not call dominant update here; will be called conditionally in restore loop
                 node._updateHeight();
                 node.code = node._generateDefaultCode();
                 return node;
@@ -1902,55 +2088,173 @@
                 const colorConnectionCounts = {};
                 const maxCapacities = {};
                 const minPortIds = {};
+                const providerInfo = {};
+
                 for (let port of this.inputs) {
                     if (port.isAlien && port.alienClass !== 'dominant') continue;
                     for (let wireId of port.connections) {
                         const wire = graph.wires[wireId];
-                        if (wire && wire.fromPortObj && wire.enabled) {
-                            if (wire.fromPortObj.isAlien && wire.fromPortObj.alienClass !== 'dominant') continue;
-                            const color = wire.fromPortObj.color || '#888888';
-                            const capacity = wire.fromPortObj.capacity || 0;
-                            if (!colorConnectionCounts[color]) { colorConnectionCounts[color] = 0; maxCapacities[color] = 0; minPortIds[color] = Infinity; }
-                            colorConnectionCounts[color]++;
-                            if (capacity > maxCapacities[color]) maxCapacities[color] = capacity;
-                            if (port.id < minPortIds[color]) minPortIds[color] = port.id;
+                        if (!wire || !wire.enabled) continue;
+                        const fromPort = wire.fromPortObj;
+                        if (!fromPort) continue;
+                        if (fromPort.isAlien && fromPort.alienClass !== 'dominant') continue;
+                        const fromNode = fromPort.node;
+                        if (!fromNode) continue;
+                        const color = fromPort.color || '#888888';
+                        const capacity = fromPort.capacity || 0;
+                        const providerId = fromNode.id;
+                        const providerPortId = fromPort.id;
+
+                        if (!colorConnectionCounts[color]) {
+                            colorConnectionCounts[color] = 0;
+                            maxCapacities[color] = 0;
+                            minPortIds[color] = Infinity;
+                            providerInfo[color] = [];
+                        }
+                        colorConnectionCounts[color]++;
+                        if (capacity > maxCapacities[color]) maxCapacities[color] = capacity;
+                        if (port.id < minPortIds[color]) minPortIds[color] = port.id;
+                        providerInfo[color].push({ providerId, providerPortId, portId: port.id, capacity, color });
+                    }
+                }
+
+                let bestColor = null;
+                let bestConnections = -1;
+                let bestCapacity = -1;
+                let bestMinPortId = Infinity;
+                let bestProviderId = Infinity;
+                let bestProviderPortId = Infinity;
+
+                for (let color in colorConnectionCounts) {
+                    const connections = colorConnectionCounts[color];
+                    if (connections > bestConnections) {
+                        bestConnections = connections;
+                        bestColor = color;
+                        bestCapacity = maxCapacities[color] || 0;
+                        bestMinPortId = minPortIds[color] || Infinity;
+                        const providers = providerInfo[color] || [];
+                        let minProvId = Infinity, minProvPortId = Infinity;
+                        for (let p of providers) {
+                            if (p.providerId < minProvId || (p.providerId === minProvId && p.providerPortId < minProvPortId)) {
+                                minProvId = p.providerId;
+                                minProvPortId = p.providerPortId;
+                            }
+                        }
+                        bestProviderId = minProvId;
+                        bestProviderPortId = minProvPortId;
+                    } else if (connections === bestConnections) {
+                        const cap = maxCapacities[color] || 0;
+                        const minPort = minPortIds[color] || Infinity;
+                        const providers = providerInfo[color] || [];
+                        let minProvId = Infinity, minProvPortId = Infinity;
+                        for (let p of providers) {
+                            if (p.providerId < minProvId || (p.providerId === minProvId && p.providerPortId < minProvPortId)) {
+                                minProvId = p.providerId;
+                                minProvPortId = p.providerPortId;
+                            }
+                        }
+
+                        if (cap > bestCapacity) {
+                            bestColor = color;
+                            bestCapacity = cap;
+                            bestMinPortId = minPort;
+                            bestProviderId = minProvId;
+                            bestProviderPortId = minProvPortId;
+                        } else if (cap === bestCapacity) {
+                            if (minPort < bestMinPortId) {
+                                bestColor = color;
+                                bestMinPortId = minPort;
+                                bestProviderId = minProvId;
+                                bestProviderPortId = minProvPortId;
+                            } else if (minPort === bestMinPortId) {
+                                if (minProvId < bestProviderId || (minProvId === bestProviderId && minProvPortId < bestProviderPortId)) {
+                                    bestColor = color;
+                                    bestProviderId = minProvId;
+                                    bestProviderPortId = minProvPortId;
+                                }
+                            }
                         }
                     }
                 }
-                let bestColor = null, bestConnections = -1, bestCapacity = -1, bestMinPortId = Infinity;
-                for (let color in colorConnectionCounts) {
-                    const connections = colorConnectionCounts[color];
-                    const capacity = maxCapacities[color] || 0;
-                    const minPortId = minPortIds[color] || Infinity;
-                    if (connections > bestConnections ||
-                        (connections === bestConnections && capacity > bestCapacity) ||
-                        (connections === bestConnections && capacity === bestCapacity && minPortId < bestMinPortId)) {
-                        bestConnections = connections;
-                        bestCapacity = capacity;
-                        bestMinPortId = minPortId;
-                        bestColor = color;
-                    }
-                }
+
                 if (bestColor) {
                     const oldColor = this.lineColor;
-                    if (oldColor !== bestColor) { this.setLineColor(bestColor); addDebugEntry('Node "' + this.name + '" line color changed from ' + oldColor + ' to ' + bestColor +
+                    if (oldColor !== bestColor) {
+                        this.setLineColor(bestColor);
+                        const totalConnections = Object.values(colorConnectionCounts).reduce((a, b) => a + b, 0);
+                        const colorCount = colorConnectionCounts[bestColor] || 0;
+                        const maxCount = Math.max(...Object.values(colorConnectionCounts));
+                        const cap = maxCapacities[bestColor] || 0;
+                        const minPort = minPortIds[bestColor] || Infinity;
+                        if (colorCount > maxCount) {
+                            this._ruleApplied = 'rule5';
+                            this._ruleDescription = `Most connections (${colorCount} of ${bestColor})`;
+                        } else {
+                            let anotherColor = null;
+                            for (let c in colorConnectionCounts) {
+                                if (c !== bestColor && colorConnectionCounts[c] === bestConnections) {
+                                    anotherColor = c;
+                                    break;
+                                }
+                            }
+                            if (anotherColor) {
+                                if (maxCapacities[bestColor] > maxCapacities[anotherColor]) {
+                                    this._ruleApplied = 'rule1';
+                                    this._ruleDescription = `Highest capacity (${maxCapacities[bestColor]} vs ${maxCapacities[anotherColor]}) for color ${bestColor}`;
+                                } else {
+                                    if (minPortIds[bestColor] < minPortIds[anotherColor]) {
+                                        this._ruleApplied = 'rule6';
+                                        this._ruleDescription = `Lowest receiver port ID (${minPortIds[bestColor]}) for color ${bestColor}`;
+                                    } else {
+                                        this._ruleApplied = 'rule7';
+                                        this._ruleDescription = `Lowest provider port ID for color ${bestColor}`;
+                                    }
+                                }
+                            } else {
+                                this._ruleApplied = 'rule5';
+                                this._ruleDescription = `Most connections (${colorCount} of ${bestColor})`;
+                            }
+                        }
+                        addDebugEntry('Node "' + this.name + '" line color changed from ' + oldColor + ' to ' + bestColor +
                             ' (enabled connections: ' + bestConnections + ', max capacity: ' + bestCapacity +
-                            ', min port ID: ' + bestMinPortId + ')', 'node'); }
+                            ', min port ID: ' + bestMinPortId + ', rule: ' + this._ruleApplied + ')', 'node');
+                    }
                 } else {
                     const oldColor = this.lineColor;
-                    if (oldColor !== '#888888') { this.setLineColor('#888888'); addDebugEntry('Node "' + this.name + '" line color changed from ' + oldColor + ' to #888888 (default grey)', 'node'); }
+                    if (oldColor !== '#888888') {
+                        this.setLineColor('#888888');
+                        this._ruleApplied = 'default';
+                        this._ruleDescription = 'Default grey (no connections)';
+                        addDebugEntry('Node "' + this.name + '" line color changed from ' + oldColor + ' to #888888 (default grey)', 'node');
+                    }
                 }
+
                 for (let port of this.outputs) {
                     if (port.isAlien && port.alienClass !== 'dominant') continue;
                     const oldColor = port.color;
                     port.color = this.lineColor;
-                    if (oldColor !== this.lineColor) addDebugEntry('Output port "' + port.name + '" color changed from ' + oldColor + ' to ' + this.lineColor, 'port-change');
+                    if (oldColor !== this.lineColor) {
+                        addDebugEntry('Output port "' + port.name + '" color changed from ' + oldColor + ' to ' + this.lineColor, 'port-change');
+                    }
                 }
+
                 for (let port of this.inputs) {
                     if (port.isAlien && port.alienClass !== 'dominant') continue;
                     let hasEnabledConnection = false;
-                    for (let wireId of port.connections) { const wire = graph.wires[wireId]; if (wire && wire.enabled) { hasEnabledConnection = true; break; } }
-                    if (!hasEnabledConnection) { const oldColor = port.color; port.color = '#888888'; if (oldColor !== '#888888') addDebugEntry('Port "' + port.name + '" color reset to grey (no enabled connections)', 'port-change'); }
+                    for (let wireId of port.connections) {
+                        const wire = graph.wires[wireId];
+                        if (wire && wire.enabled) {
+                            hasEnabledConnection = true;
+                            break;
+                        }
+                    }
+                    if (!hasEnabledConnection) {
+                        const oldColor = port.color;
+                        port.color = '#888888';
+                        if (oldColor !== '#888888') {
+                            addDebugEntry('Port "' + port.name + '" color reset to grey (no enabled connections)', 'port-change');
+                        }
+                    }
                 }
             }
 
@@ -1970,7 +2274,9 @@
                             const capacity = fromPort.capacity || 0;
                             const providerName = fromNode ? fromNode.name : 'unknown';
                             const key = color + '_' + capacity + '_' + providerName;
-                            if (!colorCounts[key]) colorCounts[key] = { color, capacity, count: 0, providerName, providerId: fromNode ? fromNode.id : 'unknown' };
+                            if (!colorCounts[key]) {
+                                colorCounts[key] = { color, capacity, count: 0, providerName, providerId: fromNode ? fromNode.id : 'unknown' };
+                            }
                             colorCounts[key].count++;
                             enabledCount++;
                         }
@@ -1978,19 +2284,55 @@
                     let bestColor = null, bestCount = -1, bestCapacity = -1, bestProviderName = null, bestProviderId = null;
                     for (let key in colorCounts) {
                         const data = colorCounts[key];
-                        if (data.count > bestCount) { bestCount = data.count; bestColor = data.color; bestCapacity = data.capacity; bestProviderName = data.providerName; bestProviderId = data.providerId; }
+                        if (data.count > bestCount) {
+                            bestCount = data.count;
+                            bestColor = data.color;
+                            bestCapacity = data.capacity;
+                            bestProviderName = data.providerName;
+                            bestProviderId = data.providerId;
+                        } else if (data.count === bestCount) {
+                            if (data.capacity > bestCapacity) {
+                                bestCapacity = data.capacity;
+                                bestColor = data.color;
+                                bestProviderName = data.providerName;
+                                bestProviderId = data.providerId;
+                            } else if (data.capacity === bestCapacity) {
+                                if (data.providerId < bestProviderId) {
+                                    bestProviderId = data.providerId;
+                                    bestColor = data.color;
+                                    bestProviderName = data.providerName;
+                                }
+                            }
+                        }
                     }
-                    if (enabledCount === 0) { const oldColor = port.color; port.color = '#888888'; if (oldColor !== '#888888') { addDebugEntry('Port "' + port.name + '" color reset to grey (no enabled connections)', 'port-change'); anyChanged = true; } }
-                    else if (bestColor) { const oldColor = port.color; if (oldColor !== bestColor) { port.color = bestColor; addDebugEntry('Port "' + port.name + '" color changed from ' + oldColor + ' to ' + bestColor +
+                    if (enabledCount === 0) {
+                        const oldColor = port.color;
+                        port.color = '#888888';
+                        if (oldColor !== '#888888') {
+                            addDebugEntry('Port "' + port.name + '" color reset to grey (no enabled connections)', 'port-change');
+                            anyChanged = true;
+                        }
+                    } else if (bestColor) {
+                        const oldColor = port.color;
+                        if (oldColor !== bestColor) {
+                            port.color = bestColor;
+                            addDebugEntry('Port "' + port.name + '" color changed from ' + oldColor + ' to ' + bestColor +
                                 ' (enabled connections of this color: ' + bestCount + '/' + enabledCount +
-                                ', capacity: ' + bestCapacity + ', from provider "' + bestProviderName + '")', 'port-change'); anyChanged = true; } }
+                                ', capacity: ' + bestCapacity + ', from provider "' + bestProviderName + '")', 'port-change');
+                            anyChanged = true;
+                        }
+                    }
                 }
                 return anyChanged;
             }
 
             addInput(name, capacity = 2, alienClass = null) {
                 const port = super.addInput(name, capacity, alienClass);
-                if (!port.isAlien || port.alienClass === 'dominant') { port.color = '#888888'; this._updateInputColorsFromConnections(); this._updateDominantLineColor(); }
+                if (!port.isAlien || port.alienClass === 'dominant') {
+                    port.color = '#888888';
+                    this._updateInputColorsFromConnections();
+                    this._updateDominantLineColor();
+                }
                 this.code = this._generateDefaultCode();
                 return port;
             }
@@ -2004,7 +2346,10 @@
 
             removeInput(index) {
                 const port = super.removeInput(index);
-                if (port && (!port.isAlien || port.alienClass === 'dominant')) { this._updateInputColorsFromConnections(); this._updateDominantLineColor(); }
+                if (port && (!port.isAlien || port.alienClass === 'dominant')) {
+                    this._updateInputColorsFromConnections();
+                    this._updateDominantLineColor();
+                }
                 this.code = this._generateDefaultCode();
                 return port;
             }
@@ -2016,10 +2361,14 @@
                     if (port.isAlien && port.alienClass !== 'dominant') continue;
                     const oldPortColor = port.color;
                     port.color = hex;
-                    if (oldPortColor !== hex) addDebugEntry('Output port "' + port.name + '" color changed from ' + oldPortColor + ' to ' + hex, 'port-change');
+                    if (oldPortColor !== hex) {
+                        addDebugEntry('Output port "' + port.name + '" color changed from ' + oldPortColor + ' to ' + hex, 'port-change');
+                    }
                 }
                 this._propagateColorToConnected(hex);
-                if (oldColor !== hex) addDebugEntry('Node "' + this.name + '" line color changed from ' + oldColor + ' to ' + hex, 'node');
+                if (oldColor !== hex) {
+                    addDebugEntry('Node "' + this.name + '" line color changed from ' + oldColor + ' to ' + hex, 'node');
+                }
                 saveState();
             }
 
@@ -2040,10 +2389,21 @@
                                 for (let wId of toPort.connections) {
                                     const w = graph.wires[wId];
                                     if (w && w.fromPortObj && w.fromPortObj.color === toPort.color) {
-                                        if (w.fromPortObj.capacity > currentBestCapacity) currentBestCapacity = w.fromPortObj.capacity;
+                                        if (w.fromPortObj.capacity > currentBestCapacity) {
+                                            currentBestCapacity = w.fromPortObj.capacity;
+                                        }
                                     }
                                 }
-                                if (fromPort.capacity > currentBestCapacity) connectedNodes.push({ node: toNode, fromPort, toPort, fromCap: fromPort.capacity, toCap: toPort.capacity, currentBest: currentBestCapacity });
+                                if (fromPort.capacity > currentBestCapacity) {
+                                    connectedNodes.push({
+                                        node: toNode,
+                                        fromPort: fromPort,
+                                        toPort: toPort,
+                                        fromCap: fromPort.capacity,
+                                        toCap: toPort.capacity,
+                                        currentBest: currentBestCapacity
+                                    });
+                                }
                             }
                         }
                     }
@@ -2053,7 +2413,9 @@
                     const best = connectedNodes[0];
                     const oldColor = best.toPort.color;
                     best.toPort.color = hex;
-                    if (oldColor !== hex) addDebugEntry('Input port "' + best.toPort.name + '" on node "' + best.node.name + '" color changed from ' + oldColor + ' to ' + hex + ' (propagated from "' + this.name + '", capacity ' + best.fromCap + ' > current best ' + best.currentBest + ')', 'port-change');
+                    if (oldColor !== hex) {
+                        addDebugEntry('Input port "' + best.toPort.name + '" on node "' + best.node.name + '" color changed from ' + oldColor + ' to ' + hex + ' (propagated from "' + this.name + '", capacity ' + best.fromCap + ' > current best ' + best.currentBest + ')', 'port-change');
+                    }
                     best.node._updateInputColorsFromConnections();
                     best.node._updateDominantLineColor();
                     addDebugEntry('Color propagated from "' + this.name + '" to "' + best.node.name + '"', 'success');
@@ -2076,13 +2438,17 @@
                             for (let wId of toPort.connections) {
                                 const w = graph.wires[wId];
                                 if (w && w.fromPortObj && w.fromPortObj.color === toPort.color) {
-                                    if (w.fromPortObj.capacity > currentBestCapacity) currentBestCapacity = w.fromPortObj.capacity;
+                                    if (w.fromPortObj.capacity > currentBestCapacity) {
+                                        currentBestCapacity = w.fromPortObj.capacity;
+                                    }
                                 }
                             }
                             if (fromPort.capacity > currentBestCapacity) {
                                 const oldColor = toPort.color;
                                 toPort.color = this.lineColor;
-                                if (oldColor !== this.lineColor) addDebugEntry('Input port "' + toPort.name + '" on node "' + toNode.name + '" color changed from ' + oldColor + ' to ' + this.lineColor + ' (wire enabled, capacity ' + fromPort.capacity + ' > current best ' + currentBestCapacity + ')', 'port-change');
+                                if (oldColor !== this.lineColor) {
+                                    addDebugEntry('Input port "' + toPort.name + '" on node "' + toNode.name + '" color changed from ' + oldColor + ' to ' + this.lineColor + ' (wire enabled, capacity ' + fromPort.capacity + ' > current best ' + currentBestCapacity + ')', 'port-change');
+                                }
                                 toNode._updateInputColorsFromConnections();
                                 toNode._updateDominantLineColor();
                                 addDebugEntry('Color propagated to "' + toNode.name + '" after wire enabled', 'success');
@@ -2118,6 +2484,15 @@
 
         let graph = null;
         let renderer = null;
+
+        function hexToRgb(hex) {
+            const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+            return result ? {
+                r: parseInt(result[1], 16),
+                g: parseInt(result[2], 16),
+                b: parseInt(result[3], 16)
+            } : { r: 128, g: 128, b: 128 };
+        }
 
         class Graph {
             constructor() {
@@ -2177,14 +2552,40 @@
                 if (!fromPort.enabled || !toPort.enabled) { addDebugEntry('Cannot connect - port is disabled', 'warning'); return null; }
                 const fromNode = fromPort.node, toNode = toPort.node;
                 if (!fromNode || !toNode) return null;
+
+                // *** ENFORCE NATIVE PORT CLASS COMPATIBILITY ***
                 const fromPortClass = fromPort.isAlien ? fromPort.alienClass : fromNode.nodeClass;
                 const toPortClass = toPort.isAlien ? toPort.alienClass : toNode.nodeClass;
+
+                // If both are native (not alien, not dummy), they must be of the same class
+                if (!fromPort.isAlien && !toPort.isAlien && !fromPort.isDummy && !toPort.isDummy) {
+                    if (fromNode.nodeClass !== toNode.nodeClass) {
+                        addDebugEntry('Cannot connect - native ports can only connect same node class (empty↔empty, standard↔standard, dominant↔dominant)', 'warning');
+                        return null;
+                    }
+                }
+
                 if ((fromPortClass === 'dominant' && toPortClass === 'standard') ||
-                    (fromPortClass === 'standard' && toPortClass === 'dominant')) { addDebugEntry('Cannot connect - dominant and standard ports cannot be interconnected', 'warning'); return null; }
-                if (fromPortClass === 'empty' && toPortClass === 'dominant') { addDebugEntry('Cannot connect - empty port to dominant port not allowed', 'warning'); return null; }
-                if (fromPortClass === 'dominant' && toPortClass === 'empty') { addDebugEntry('Cannot connect - dominant port to empty port not allowed', 'warning'); return null; }
-                if (fromPort.isDummy && !toPort.isDummy) { addDebugEntry('Dummy port can only connect to dummy port', 'warning'); return null; }
-                if (!fromPort.isDummy && toPort.isDummy) { addDebugEntry('Dummy port can only connect to dummy port', 'warning'); return null; }
+                    (fromPortClass === 'standard' && toPortClass === 'dominant')) {
+                    addDebugEntry('Cannot connect - dominant and standard ports cannot be interconnected', 'warning');
+                    return null;
+                }
+                if (fromPortClass === 'empty' && toPortClass === 'dominant') {
+                    addDebugEntry('Cannot connect - empty port to dominant port not allowed', 'warning');
+                    return null;
+                }
+                if (fromPortClass === 'dominant' && toPortClass === 'empty') {
+                    addDebugEntry('Cannot connect - dominant port to empty port not allowed', 'warning');
+                    return null;
+                }
+                if (fromPort.isDummy && !toPort.isDummy) {
+                    addDebugEntry('Dummy port can only connect to dummy port', 'warning');
+                    return null;
+                }
+                if (!fromPort.isDummy && toPort.isDummy) {
+                    addDebugEntry('Dummy port can only connect to dummy port', 'warning');
+                    return null;
+                }
                 if (fromPort.isFull || toPort.isFull) return null;
                 for (let wireId in this.wires) {
                     const wire = this.wires[wireId];
@@ -2193,7 +2594,14 @@
                 }
 
                 let animColors = null;
-                if (fromNode.nodeClass === toNode.nodeClass) {
+                if (fromNode.nodeClass === 'dominant' && toNode.nodeClass === 'dominant') {
+                    const srcColor = fromNode.lineColor || '#667eea';
+                    const tgtColor = toNode.lineColor || '#2ecc71';
+                    animColors = {
+                        source: hexToRgb(srcColor),
+                        target: hexToRgb(tgtColor)
+                    };
+                } else if (fromNode.nodeClass === toNode.nodeClass) {
                     const classColors = {
                         'empty': { source: { r: 80, g: 180, b: 255 }, target: { r: 60, g: 255, b: 140 } },
                         'standard': { source: { r: 255, g: 160, b: 40 }, target: { r: 255, g: 230, b: 80 } },
@@ -2223,33 +2631,10 @@
                 }
                 if (fromPortClass === 'dominant' && toPortClass === 'dominant') {
                     if (toNode.nodeClass === 'dominant') {
-                        const providerConnectionCounts = {};
-                        for (let port of toNode.inputs) {
-                            if (port.isAlien && port.alienClass !== 'dominant') continue;
-                            for (let wireId of port.connections) {
-                                const w = this.wires[wireId];
-                                if (w && w.fromPortObj && w.enabled) {
-                                    const providerId = w.fromPortObj.node ? w.fromPortObj.node.id : null;
-                                    if (providerId) { if (!providerConnectionCounts[providerId]) providerConnectionCounts[providerId] = 0; providerConnectionCounts[providerId]++; }
-                                }
-                            }
-                        }
-                        let maxConnections = 0, dominantProviderId = null;
-                        for (let providerId in providerConnectionCounts) {
-                            if (providerConnectionCounts[providerId] > maxConnections) { maxConnections = providerConnectionCounts[providerId]; dominantProviderId = providerId; }
-                        }
-                        if (dominantProviderId == fromNode.id) {
-                            if (fromPort.capacity > toPort.capacity) {
-                                const oldColor = toPort.color;
-                                toPort.color = fromPort.color;
-                                if (oldColor !== fromPort.color) addDebugEntry('Input port "' + toPort.name + '" on node "' + toNode.name + '" color changed from ' + oldColor + ' to ' + fromPort.color + ' (provider has ' + maxConnections + ' connections, most dominant)', 'port-change');
-                                toNode._updateInputColorsFromConnections();
-                                toNode._updateDominantLineColor();
-                                addDebugEntry('Color transferred from "' + fromNode.name + '" to "' + toNode.name + '" (most connections: ' + maxConnections + ')', 'success');
-                            }
-                        } else { addDebugEntry('Skipped color transfer from "' + fromNode.name + '" to "' + toNode.name + '" (not the most dominant provider, max connections: ' + maxConnections + ')', 'info'); }
+                        toNode._updateDominantLineColor();
                     }
                 }
+                wire.updateAnimationColors(fromNode, toNode);
                 this.checkWireSameTypeSelection();
                 saveState();
                 return wire;
@@ -2298,6 +2683,11 @@
                 if (toNode) {
                     if (toNode.nodeClass === 'dominant') { toNode._updateInputColorsFromConnections(); toNode._updateDominantLineColor(); }
                     else if (toNode.nodeClass === 'standard' && toNode._updateDominantAlienInputs) { toNode._updateDominantAlienInputs(); }
+                }
+                const fromNode = this.nodes[wire.from];
+                const toNode2 = this.nodes[wire.to];
+                if (fromNode && toNode2) {
+                    wire.updateAnimationColors(fromNode, toNode2);
                 }
                 this.checkWireSameTypeSelection();
                 renderer.render();
@@ -2531,7 +2921,6 @@
                     const toNode = this.nodes[wire.to];
                     if (fromNode && toNode) {
                         let fromPort = null, toPort = null;
-                        // Find from port
                         if (wire.fromPortId) {
                             for (let port of fromNode.outputs) { if (port.id === wire.fromPortId) { fromPort = port; break; } }
                             if (!fromPort) { for (let port of fromNode.dummyPorts) { if (port.id === wire.fromPortId) { fromPort = port; break; } } }
@@ -2540,7 +2929,6 @@
                             for (let port of fromNode.outputs) { if (port.name === wire.fromPort) { fromPort = port; break; } }
                             if (!fromPort) { for (let port of fromNode.dummyPorts) { if (port.name === wire.fromPort) { fromPort = port; break; } } }
                         }
-                        // Find to port
                         if (wire.toPortId) {
                             for (let port of toNode.inputs) { if (port.id === wire.toPortId) { toPort = port; break; } }
                             if (!toPort) { for (let port of toNode.dummyPorts) { if (port.id === wire.toPortId) { toPort = port; break; } } }
@@ -2568,9 +2956,8 @@
                 }
                 for (let id in this.nodes) {
                     const node = this.nodes[id];
+                    const savedNode = data.nodes[id];
                     if (node.nodeClass === 'dominant') {
-                        // Preserve saved color if not default
-                        const savedNode = data.nodes[id];
                         if (savedNode && savedNode.lineColor && savedNode.lineColor !== '#888888') {
                             node.lineColor = savedNode.lineColor;
                             node.gradientColor = lerpColor(savedNode.lineColor, node.bodyColor, 0.5);
@@ -2582,8 +2969,27 @@
                         node._updateDominantAlienInputs();
                     }
                 }
+                for (let id in this.wires) {
+                    const wire = this.wires[id];
+                    const fromNode = this.nodes[wire.from];
+                    const toNode = this.nodes[wire.to];
+                    if (fromNode && toNode) {
+                        wire.updateAnimationColors(fromNode, toNode);
+                    }
+                }
                 addDebugEntry('Graph loaded with ' + Object.keys(this.nodes).length + ' nodes and ' + Object.keys(this.wires).length + ' wires', 'success');
                 saveState();
+            }
+
+            // Method to activate all wires connected to a node (used during execution)
+            activateWiresConnectedTo(nodeId) {
+                const connections = this.getNodeConnections(nodeId);
+                for (let wire of connections) {
+                    const wireObj = this.wires[wire.id];
+                    if (wireObj && wireObj.enabled) {
+                        wireObj.setActive(true);
+                    }
+                }
             }
         }
 
@@ -3750,7 +4156,7 @@
         }
 
         // ================================================================
-        // WIRE CURVE TYPE
+        // WIRE CURVE TYPE & ACTIVE TOGGLE
         // ================================================================
 
         function setWireCurveType(id, type) {
@@ -3760,6 +4166,17 @@
                 renderer.render();
                 updatePropertiesPanel(null);
                 document.getElementById('status').innerHTML = 'Wire curve set to ' + type;
+                saveState();
+            }
+        }
+
+        function setWireActive(id, active) {
+            const wire = graph.wires[id];
+            if (wire) {
+                wire.setActive(active);
+                renderer.render();
+                updatePropertiesPanel(null);
+                document.getElementById('status').innerHTML = 'Wire ' + (active ? 'activated' : 'deactivated');
                 saveState();
             }
         }
@@ -3815,7 +4232,7 @@
                 const port = direction === 'input' ? node.inputs[index] : node.outputs[index];
                 if (port && !port.isDummy) {
                     const val = parseInt(value);
-                    if (val >= 1 && val <= 10) {
+                    if (val >= 1 && val <= 999) {
                         port.capacity = val;
                         addDebugEntry('Updated capacity for port "' + port.name + '" on node "' + node.name + '" to ' + val, 'port');
                         if (port.connections.length > val) {
@@ -3850,22 +4267,48 @@
                 else if (direction === 'output') port = node.outputs[index];
                 else if (direction === 'dummy') port = node.dummyPorts[index];
                 if (port) {
-                    const wiresToDisable = [];
-                    if (!enabled) {
-                        for (let wireId of port.connections) { const wire = graph.wires[wireId]; if (wire && wire.enabled) wiresToDisable.push(wireId); }
-                        for (let wireId of wiresToDisable) { const wire = graph.wires[wireId]; if (wire) { wire.enabled = false; addDebugEntry('Disabled wire ' + wireId + ' because port "' + port.name + '" was disabled', 'wire'); } }
-                        addDebugEntry('Disabled ' + wiresToDisable.length + ' wire(s) connected to port "' + port.name + '"', 'port');
+                    if (enabled) {
+                        for (let wireId of port.connections) {
+                            const wire = graph.wires[wireId];
+                            if (wire && !wire.enabled) {
+                                wire.enabled = true;
+                                addDebugEntry('Re-enabled wire ' + wireId + ' (port "' + port.name + '" re-enabled)', 'wire');
+                            }
+                        }
+                    } else {
+                        for (let wireId of port.connections) {
+                            const wire = graph.wires[wireId];
+                            if (wire && wire.enabled) {
+                                wire.enabled = false;
+                                addDebugEntry('Disabled wire ' + wireId + ' because port "' + port.name + '" was disabled', 'wire');
+                            }
+                        }
                     }
                     port.enabled = enabled;
                     addDebugEntry((enabled ? 'Enabled' : 'Disabled') + ' port "' + port.name + '" on node "' + node.name + '" (' + direction + ')', 'port');
-                    if (node.nodeClass === 'dominant') { node._updateInputColorsFromConnections(); node._updateDominantLineColor(); }
-                    else if (node.nodeClass === 'standard') {
-                        if (port.isAlien && port.alienClass === 'dominant' && node._updateDominantAlienInputs) { node._updateDominantAlienInputs(); }
+
+                    if (node.nodeClass === 'dominant') {
+                        node._updateInputColorsFromConnections();
+                        node._updateDominantLineColor();
+                    } else if (node.nodeClass === 'standard') {
+                        if (port.isAlien && port.alienClass === 'dominant' && node._updateDominantAlienInputs) {
+                            node._updateDominantAlienInputs();
+                        }
+                    }
+                    for (let wireId of port.connections) {
+                        const wire = graph.wires[wireId];
+                        if (wire) {
+                            const fromNode = graph.nodes[wire.from];
+                            const toNode = graph.nodes[wire.to];
+                            if (fromNode && toNode) {
+                                wire.updateAnimationColors(fromNode, toNode);
+                            }
+                        }
                     }
                     renderer.render();
                     updateLiveState();
                     updatePropertiesPanel(node);
-                    document.getElementById('status').innerHTML = enabled ? 'Enabled port' : 'Disabled port and ' + wiresToDisable.length + ' wire(s)';
+                    document.getElementById('status').innerHTML = enabled ? 'Enabled port' : 'Disabled port and wires';
                     saveState();
                 }
             }
@@ -4169,7 +4612,7 @@
                             else if (isApproximated) statusText = ' APPROXIMATED';
                             if (isDummy) statusText = ' DUMMY';
                             if (!isEnabled) statusText = ' DISABLED';
-                            if (isAnimating) statusText += ' ANIMATING';
+                            if (isAnimating) statusText += ' ACTIVE';
                             if (isPulsating) statusText += ' PULSATING';
                             graphHtml += '<div class="wire-line' + typeClass + ' ' + enabledClass + '">  "' + fromNode.name + '".' + wire.fromPort + '(ID:' + wire.fromPortId + ') → "' + toNode.name + '".' + wire.toPort + '(ID:' + wire.toPortId + ')' + statusText + ' (' + wireTypeName + ', curve: ' + curveType + ')</div>';
                         }
@@ -4294,14 +4737,22 @@
 
                 logHtml += `<div style="color:#2ecc71;font-size:8px;padding-top:4px;">▶ ${node.name} executed → ${JSON.stringify(result.output)}</div>`;
 
+                // Activate all connected wires (set active state)
+                for (let wire of connections) {
+                    const wireObj = graph.wires[wire.id];
+                    if (wireObj && wireObj.enabled) {
+                        wireObj.setActive(true);
+                        logHtml += `<div style="color:#667eea;font-size:8px;padding-left:8px;">  ▶ Activated wire ${wire.id}</div>`;
+                    }
+                }
+
                 if (node.name === 'EmptyNode1') {
                     for (let wire of connections) {
                         if (wire.from === nodeId) {
                             const wireObj = graph.wires[wire.id];
                             if (wireObj && wireObj.enabled) {
-                                wireObj.startAnimation();
                                 wireObj.setPulsating(false);
-                                logHtml += `<div style="color:#2ecc71;font-size:8px;padding-left:8px;">  ▶ Started gradient travel on wire ${wire.id}</div>`;
+                                logHtml += `<div style="color:#2ecc71;font-size:8px;padding-left:8px;">  ▶ Gradient travel started on wire ${wire.id}</div>`;
                             }
                         }
                     }
@@ -4319,6 +4770,18 @@
                     document.getElementById('status').innerHTML = '▶ Pulsating glow started (EmptyNode2)';
                 } else {
                     document.getElementById('status').innerHTML = 'Node "' + node.name + '" executed successfully';
+                }
+
+                // Update wire animation colors after execution (in case node colors changed)
+                for (let wire of connections) {
+                    const wireObj = graph.wires[wire.id];
+                    if (wireObj) {
+                        const fromNode = graph.nodes[wireObj.from];
+                        const toNode = graph.nodes[wireObj.to];
+                        if (fromNode && toNode) {
+                            wireObj.updateAnimationColors(fromNode, toNode);
+                        }
+                    }
                 }
 
                 let outputHtml = logHtml;
@@ -4428,9 +4891,20 @@
                 await updateNodeCodeBackend(parseInt(id), node.code);
             }
 
+            // Activate all wires (set active state) before running
             for (let id in graph.wires) {
                 const wire = graph.wires[id];
-                if (wire.enabled) wire.startAnimation();
+                if (wire.enabled) {
+                    wire.setActive(true);
+                }
+            }
+
+            // Start gradient animations on all active wires
+            for (let id in graph.wires) {
+                const wire = graph.wires[id];
+                if (wire.enabled && wire.active) {
+                    wire.startAnimation();
+                }
             }
 
             const response = await fetch(`${BACKEND_URL}/graph/execute`, {
@@ -4441,6 +4915,7 @@
 
             const result = await response.json();
 
+            // Stop all animations after execution (but keep active state if needed)
             for (let id in graph.wires) {
                 const wire = graph.wires[id];
                 wire.stopAnimation();
@@ -4504,6 +4979,16 @@
                     for (let log of result.logs) {
                         logHtml += `<div style="color:#888;font-size:7px;padding-left:8px;">${escapeHtml(log)}</div>`;
                     }
+                }
+            }
+
+            // Update wire animation colors after execution
+            for (let id in graph.wires) {
+                const wire = graph.wires[id];
+                const fromNode = graph.nodes[wire.from];
+                const toNode = graph.nodes[wire.to];
+                if (fromNode && toNode) {
+                    wire.updateAnimationColors(fromNode, toNode);
                 }
             }
 
@@ -4681,6 +5166,7 @@
 
         function updatePropertiesPanel(node) {
             const container = document.getElementById('propertiesContent');
+            // If selected wires
             if (graph.selectedWires.length > 0) {
                 let html = '';
                 const wireCount = graph.selectedWires.length;
@@ -4715,13 +5201,18 @@
                                 ${fromNode ? escapeHtml(fromNode.name) : '?'}.${wire.fromPort} → ${toNode ? escapeHtml(toNode.name) : '?'}.${wire.toPort}
                                 ${isDummy ? ' D' : ''}
                                 <span style="color:${(isAnimating || isPulsating) ? '#2ecc71' : '#666'};font-size:8px;margin-left:6px;">
-                                    ${isAnimating ? 'ANIMATING' : ''} ${isPulsating ? 'PULSATING' : ''}
+                                    ${isAnimating ? 'ACTIVE' : ''} ${isPulsating ? 'PULSATING' : ''}
                                 </span>
                             </div>
                             <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:3px;">
                                 <label style="font-size:8px;color:#666;display:flex;align-items:center;gap:4px;cursor:pointer;">
                                     <input type="checkbox" ${wire.enabled ? 'checked' : ''} onchange="toggleWireEnabled(${wire.id})">
                                     Enabled
+                                </label>
+                                <label style="font-size:8px;color:#666;display:flex;align-items:center;gap:4px;cursor:pointer;">
+                                    Active:
+                                    <input type="checkbox" ${wire.active ? 'checked' : ''} onchange="setWireActive(${wire.id}, this.checked)">
+                                    ${wire.active ? 'ON' : 'OFF'}
                                 </label>
                                 <label style="font-size:8px;color:#666;display:flex;align-items:center;gap:4px;cursor:pointer;">
                                     Curve:
@@ -4769,6 +5260,7 @@
                 return;
             }
 
+            // If multiple nodes selected
             if (graph.selectedNodes.length > 0 && !node) {
                 let html = `
                     <div class="property-group">
@@ -4815,6 +5307,7 @@
                 return;
             }
 
+            // Single node selected
             if (!node) { container.innerHTML = '<div class="no-selection">No selection</div>'; return; }
 
             const isIdentical = graph.sameTypeSelected && graph.selectedNodes.length > 1;
@@ -4877,10 +5370,19 @@
                         if (wire && wire.fromPortObj) {
                             const fromNode = wire.fromPortObj.node;
                             const fromPort = wire.fromPortObj;
-                            if (fromNode) providerInfo.push({ name: fromNode.name, capacity: fromPort.capacity || 0, color: fromPort.color || '#888888' });
+                            if (fromNode) {
+                                providerInfo.push({
+                                    name: fromNode.name,
+                                    capacity: fromPort.capacity || 0,
+                                    color: fromPort.color || '#888888',
+                                    portId: fromPort.id
+                                });
+                            }
                         }
                     }
-                    const providerText = providerInfo.length > 0 ? providerInfo.map(p => `${escapeHtml(p.name)} (cap:${p.capacity}, ${p.color})`).join(', ') : 'none';
+                    const providerText = providerInfo.length > 0
+                        ? providerInfo.map(p => `${escapeHtml(p.name)} (cap:${p.capacity}, ${p.color})`).join(', ')
+                        : 'none';
                     dominantInfoHtml += `
                         <div style="padding:2px 0;border-bottom:1px solid rgba(255,255,255,0.05);">
                             <span style="color:#c8c8c8;">${port.name}:</span>
@@ -4892,116 +5394,25 @@
                     `;
                 }
                 dominantInfoHtml += `</div></div>`;
-                let ruleInfo = '';
-                const totalInputs = node.inputs.reduce((sum, p) => sum + p.connections.length, 0);
-                if (totalInputs === 0) ruleInfo = 'Default color (no connections)';
-                else {
-                    const totalColorCounts = {};
-                    for (let port of node.inputs) {
-                        if (port.isAlien && port.alienClass !== 'dominant') continue;
-                        for (let wireId of port.connections) {
-                            const wire = graph.wires[wireId];
-                            if (wire && wire.fromPortObj && wire.enabled) {
-                                const color = wire.fromPortObj.color || '#888888';
-                                if (!totalColorCounts[color]) totalColorCounts[color] = 0;
-                                totalColorCounts[color]++;
-                            }
-                        }
-                    }
-                    let bestColor = null, bestCount = -1, bestColors = [];
-                    for (let color in totalColorCounts) {
-                        if (totalColorCounts[color] > bestCount) { bestCount = totalColorCounts[color]; bestColor = color; bestColors = [color]; }
-                        else if (totalColorCounts[color] === bestCount) bestColors.push(color);
-                    }
-                    if (bestColors.length === 1) {
-                        const providerColorCounts = {};
-                        for (let port of node.inputs) {
-                            if (port.isAlien && port.alienClass !== 'dominant') continue;
-                            for (let wireId of port.connections) {
-                                const wire = graph.wires[wireId];
-                                if (wire && wire.fromPortObj && wire.enabled) {
-                                    const fromNode = wire.fromPortObj.node;
-                                    const fromPort = wire.fromPortObj;
-                                    if (fromNode) {
-                                        const providerId = fromNode.id;
-                                        const color = fromPort.color || '#888888';
-                                        const key = providerId + '_' + color;
-                                        if (!providerColorCounts[key]) providerColorCounts[key] = { providerId, providerName: fromNode.name, color, count: 0, capacity: fromPort.capacity || 0 };
-                                        providerColorCounts[key].count++;
-                                        if (fromPort.capacity > providerColorCounts[key].capacity) providerColorCounts[key].capacity = fromPort.capacity;
-                                    }
-                                }
-                            }
-                        }
-                        let bestProvider = null, bestProviderCount = 0, bestProviderName = null, bestProviderCapacity = 0;
-                        for (let key in providerColorCounts) {
-                            const data = providerColorCounts[key];
-                            if (data.color === bestColor) {
-                                if (data.count > bestProviderCount) { bestProviderCount = data.count; bestProvider = data.providerId; bestProviderName = data.providerName; bestProviderCapacity = data.capacity; }
-                                else if (data.count === bestProviderCount) {
-                                    if (data.providerId < bestProvider) { bestProvider = data.providerId; bestProviderName = data.providerName; bestProviderCapacity = data.capacity; }
-                                }
-                            }
-                        }
-                        let maxProviderColorCount = 0;
-                        for (let key in providerColorCounts) { const data = providerColorCounts[key]; if (data.count > maxProviderColorCount) maxProviderColorCount = data.count; }
-                        const totalConnections = Object.values(totalColorCounts).reduce((a, b) => a + b, 0);
-                        const bestColorPercentage = bestCount / totalConnections;
-                        if (bestColorPercentage > 0.5 || (bestProviderCount === maxProviderColorCount && bestProviderCount > 1)) { ruleInfo = `Rule 5: Most connections from provider "${bestProviderName}" (${bestCount} connections of ${bestColor})`; }
-                        else {
-                            let rule1Applies = false, rule1Color = null, rule1Capacity = 0, rule1PortName = null;
-                            for (let port of node.inputs) {
-                                if (port.isAlien && port.alienClass !== 'dominant') continue;
-                                if (port.connections.length > 0) {
-                                    let maxCapForPort = 0, colorForPort = null;
-                                    for (let wireId of port.connections) {
-                                        const wire = graph.wires[wireId];
-                                        if (wire && wire.fromPortObj && wire.enabled) {
-                                            const cap = wire.fromPortObj.capacity || 0;
-                                            const color = wire.fromPortObj.color || '#888888';
-                                            if (cap > maxCapForPort) { maxCapForPort = cap; colorForPort = color; }
-                                        }
-                                    }
-                                    if (maxCapForPort > rule1Capacity && colorForPort === bestColor) { rule1Capacity = maxCapForPort; rule1Color = colorForPort; rule1PortName = port.name; rule1Applies = true; }
-                                }
-                            }
-                            if (rule1Applies) { ruleInfo = `Rule 1: Highest capacity on port ${rule1PortName} (${rule1Capacity} capacity, color ${bestColor})`; }
-                            else {
-                                let minPortId = Infinity, minPortColor = null, minPortName = null;
-                                for (let port of node.inputs) {
-                                    if (port.isAlien && port.alienClass !== 'dominant') continue;
-                                    if (port.connections.length > 0 && port.id < minPortId) {
-                                        for (let wireId of port.connections) {
-                                            const wire = graph.wires[wireId];
-                                            if (wire && wire.fromPortObj && wire.enabled) {
-                                                const color = wire.fromPortObj.color || '#888888';
-                                                if (color === bestColor) { minPortId = port.id; minPortColor = color; minPortName = port.name; break; }
-                                            }
-                                        }
-                                    }
-                                }
-                                if (minPortColor) { ruleInfo = `Rule 6: Lowest port ID (port ${minPortName} ID:${minPortId}, color ${minPortColor})`; }
-                                else { ruleInfo = `Rule 6: Tie-breaker - using ${bestColor}`; }
-                            }
-                        }
-                    } else {
-                        let minPortId = Infinity, minPortColor = null, minPortName = null;
-                        for (let port of node.inputs) {
-                            if (port.isAlien && port.alienClass !== 'dominant') continue;
-                            if (port.connections.length > 0 && port.id < minPortId) {
-                                for (let wireId of port.connections) {
-                                    const wire = graph.wires[wireId];
-                                    if (wire && wire.fromPortObj && wire.enabled) {
-                                        const color = wire.fromPortObj.color || '#888888';
-                                        if (bestColors.includes(color)) { minPortId = port.id; minPortColor = color; minPortName = port.name; break; }
-                                    }
-                                }
-                            }
-                        }
-                        if (minPortColor) { ruleInfo = `Rule 6: Lowest port ID (port ${minPortName} ID:${minPortId}, color ${minPortColor}) - ${bestColors.length} colors tied at ${bestCount} connections`; }
-                        else { ruleInfo = `Rule 6: Tie-breaker (${bestColors.length} colors tied at ${bestCount} connections) - using ${bestColor}`; }
-                    }
+
+                // Display which rule was applied (simplified, formal)
+                let ruleText = '';
+                if (node._ruleApplied === 'rule5') {
+                    ruleText = 'Most connections (Rule 5)';
+                } else if (node._ruleApplied === 'rule1') {
+                    ruleText = 'Highest capacity (Rule 1)';
+                } else if (node._ruleApplied === 'rule6') {
+                    ruleText = 'Lowest receiver port ID (Rule 6)';
+                } else if (node._ruleApplied === 'rule7') {
+                    ruleText = 'Lowest provider port ID (Rule 7)';
+                } else if (node._ruleApplied === 'default') {
+                    ruleText = 'Default (no connections)';
+                } else {
+                    ruleText = 'Manual override';
                 }
+
+                let ruleDescription = node._ruleDescription || '';
+
                 dominantInfoHtml += `
                     <div class="property-group">
                         <label style="color:#667eea;">Selection</label>
@@ -5011,8 +5422,10 @@
                                 <span style="display:inline-block;width:14px;height:14px;border-radius:3px;background:${node.lineColor};border:1px solid #444;"></span>
                                 <span style="color:${node.lineColor};">${node.lineColor}</span>
                             </div>
-                            <div style="margin-top:2px;color:#666;font-size:8px;">${ruleInfo}</div>
-                            <div style="margin-top:2px;color:#555;font-size:7px;">Total inputs: ${totalInputs} | Input ports: ${node.inputs.filter(p => !p.isAlien || p.alienClass === 'dominant').length} dominant ports</div>
+                            <div style="margin-top:2px;color:#888;font-size:8px;">
+                                <span style="color:#667eea;">Rule:</span> ${ruleText}
+                                ${ruleDescription ? `<div style="color:#666;font-size:7px;margin-top:2px;">${ruleDescription}</div>` : ''}
+                            </div>
                         </div>
                     </div>
                     <div style="margin-top:2px;margin-bottom:6px;">
@@ -5131,7 +5544,7 @@
                         <span style="font-size:8px;color:#555;min-width:20px;">ID:${port.id}</span>
                         <input class="port-name-edit" type="text" value="${port.name}" onchange="updatePortName(${node.id}, 'input', ${i}, this.value)">
                         ${isAlien ? `<span style="font-size:7px;color:#8855aa;margin:0 2px;">[${alienClass.charAt(0)}]</span>` : ''}
-                        <input type="number" min="1" max="10" value="${cap}" style="width:35px;padding:2px 4px;background:#1a1a1a;border:1px solid #333;border-radius:3px;color:#c8c8c8;font-size:10px;" onchange="updatePortCapacity(${node.id}, 'input', ${i}, this.value)">
+                        <input type="number" min="1" max="999" value="${cap}" style="width:65px;padding:2px 4px;background:#1a1a1a;border:1px solid #333;border-radius:3px;color:#c8c8c8;font-size:10px;" onchange="updatePortCapacity(${node.id}, 'input', ${i}, this.value)">
                         <span style="font-size:9px;color:#666;">${connCount}/${cap}${colorInfo}</span>
                         <label style="font-size:9px;color:#666;display:flex;align-items:center;gap:3px;cursor:pointer;">
                             <input type="checkbox" ${port.enabled ? 'checked' : ''} onchange="togglePortEnabled(${node.id}, 'input', ${i}, this.checked)">
@@ -5164,7 +5577,7 @@
                         <span style="font-size:8px;color:#555;min-width:20px;">ID:${port.id}</span>
                         <input class="port-name-edit" type="text" value="${port.name}" onchange="updatePortName(${node.id}, 'output', ${i}, this.value)">
                         ${isAlien ? `<span style="font-size:7px;color:#8855aa;margin:0 2px;">[${alienClass.charAt(0)}]</span>` : ''}
-                        <input type="number" min="1" max="10" value="${cap}" style="width:35px;padding:2px 4px;background:#1a1a1a;border:1px solid #333;border-radius:3px;color:#c8c8c8;font-size:10px;" onchange="updatePortCapacity(${node.id}, 'output', ${i}, this.value)">
+                        <input type="number" min="1" max="999" value="${cap}" style="width:65px;padding:2px 4px;background:#1a1a1a;border:1px solid #333;border-radius:3px;color:#c8c8c8;font-size:10px;" onchange="updatePortCapacity(${node.id}, 'output', ${i}, this.value)">
                         <span style="font-size:9px;color:#666;">${connCount}/${cap}${colorInfo}</span>
                         <label style="font-size:9px;color:#666;display:flex;align-items:center;gap:3px;cursor:pointer;">
                             <input type="checkbox" ${port.enabled ? 'checked' : ''} onchange="togglePortEnabled(${node.id}, 'output', ${i}, this.checked)">
@@ -5562,7 +5975,7 @@
             if (obj.wires) {
                 xml += '  <wires>\n';
                 for (let wire of obj.wires) {
-                    xml += '    <wire from="' + wire.from + '" to="' + wire.to + '" fromPort="' + wire.fromPort + '" toPort="' + wire.toPort + '" wireClass="' + (wire.wireClass || 'standard') + '" enabled="' + (wire.enabled !== false) + '" curveType="' + (wire.curveType || 'bezier') + '" color="' + (wire.color || '#505050') + '"/>\n';
+                    xml += '    <wire from="' + wire.from + '" to="' + wire.to + '" fromPort="' + wire.fromPort + '" toPort="' + wire.toPort + '" wireClass="' + (wire.wireClass || 'standard') + '" enabled="' + (wire.enabled !== false) + '" curveType="' + (wire.curveType || 'bezier') + '" color="' + (wire.color || '#505050') + '" active="' + (wire.active ? 'true' : 'false') + '"/>\n';
                 }
                 xml += '  </wires>\n';
             }
@@ -5678,7 +6091,8 @@
                     wireClass: wireEl.getAttribute('wireClass') || 'standard',
                     enabled: wireEl.getAttribute('enabled') !== 'false',
                     curveType: wireEl.getAttribute('curveType') || 'bezier',
-                    color: wireEl.getAttribute('color') || '#505050'
+                    color: wireEl.getAttribute('color') || '#505050',
+                    active: wireEl.getAttribute('active') === 'true'
                 });
             }
             return result;
@@ -5713,8 +6127,10 @@
             window.toggleDummySide = toggleDummySide;
             window.toggleWireEnabled = toggleWireEnabled;
             window.setWireCurveType = setWireCurveType;
+            window.setWireActive = setWireActive;
             window.showExportModal = showExportModal;
             window.showImportModal = showImportModal;
+            window.showInfoModal = showInfoModal;
             window.closeModal = closeModal;
             window.exportState = exportState;
             window.importState = importState;
