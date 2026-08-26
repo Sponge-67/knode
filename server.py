@@ -6,6 +6,7 @@ import io
 import traceback
 import inspect
 from collections import deque
+import os
 
 app = Flask(__name__, static_folder='.', static_url_path='')
 CORS(app)
@@ -161,7 +162,9 @@ def build_execution_order(nodes, connections):
 
 @app.route('/')
 def index():
-    return send_from_directory('.', 'index.html')
+    # Serve the HTML file – adjust filename if needed
+    # Assuming the file is named 'index.html' in the same directory
+    return send_from_directory('.', 'knode.html.htm')
 
 @app.route('/node/<int:node_id>/update_code', methods=['POST'])
 def update_node_code(node_id):
@@ -244,143 +247,144 @@ def execute_node(node_id):
             'logs': logs
         }), 500
 
-    @app.route('/graph/execute', methods=['POST'])
-    def execute_graph():
-        """Execute the entire graph based on connections."""
-        data = request.json
-        nodes = data.get('nodes', {})
-        connections = data.get('connections', {})
+# --- The /graph/execute route was incorrectly indented; now fixed at top level ---
+@app.route('/graph/execute', methods=['POST'])
+def execute_graph():
+    """Execute the entire graph based on connections."""
+    data = request.json
+    nodes = data.get('nodes', {})
+    connections = data.get('connections', [])
 
-        logs = []  # store all log messages
-        def log(msg):
-            logs.append(msg)
-            print(msg)  # still print to terminal
+    logs = []  # store all log messages
+    def log(msg):
+        logs.append(msg)
+        print(msg)  # still print to terminal
 
-        log("=" * 60)
-        log("GRAPH EXECUTION START")
-        log(f"Nodes: {list(nodes.keys())}")
-        log(f"Connections: {connections}")
-        log("=" * 60)
+    log("=" * 60)
+    log("GRAPH EXECUTION START")
+    log(f"Nodes: {list(nodes.keys())}")
+    log(f"Connections: {connections}")
+    log("=" * 60)
 
-        # Update graph state
-        graph_state['nodes'] = nodes
-        graph_state['connections'] = connections
+    # Update graph state
+    graph_state['nodes'] = nodes
+    graph_state['connections'] = connections
 
-        # Clear and rebuild node functions for this execution
-        for node_id in nodes:
-            node_functions.pop(int(node_id), None)
+    # Clear and rebuild node functions for this execution
+    for node_id in nodes:
+        node_functions.pop(int(node_id), None)
 
-        # Build execution order
-        execution_order = build_execution_order(nodes, connections)
-        log(f"Execution order: {execution_order}")
+    # Build execution order
+    execution_order = build_execution_order(nodes, connections)
+    log(f"Execution order: {execution_order}")
 
-        node_outputs = {}
-        node_stdout = {}
-        node_logs = {}  # store per-node logs
+    node_outputs = {}
+    node_stdout = {}
+    node_logs = {}  # store per-node logs
 
-        for node_id in execution_order:
-            node_info = nodes.get(node_id)
-            if not node_info:
-                continue
+    for node_id in execution_order:
+        node_info = nodes.get(node_id)
+        if not node_info:
+            continue
 
-            node_id_int = int(node_id)
-            node_logs[node_id] = []
+        node_id_int = int(node_id)
+        node_logs[node_id] = []
 
-            # Collect inputs from connections
-            kwargs = {}
-            for conn in connections:
-                if str(conn.get('to')) == node_id:
-                    from_node_id = str(conn.get('from'))
-                    from_port = conn.get('fromPort')
-                    to_port = conn.get('toPort')
-                    log(f"Processing connection: {from_node_id}.{from_port} -> {node_id}.{to_port}")
+        # Collect inputs from connections
+        kwargs = {}
+        for conn in connections:
+            if str(conn.get('to')) == node_id:
+                from_node_id = str(conn.get('from'))
+                from_port = conn.get('fromPort')
+                to_port = conn.get('toPort')
+                log(f"Processing connection: {from_node_id}.{from_port} -> {node_id}.{to_port}")
 
-                    if from_node_id in node_outputs:
-                        from_outputs = node_outputs[from_node_id]
-                        log(f"Source outputs: {from_outputs}")
-                        if from_port in from_outputs:
-                            kwargs[to_port] = from_outputs[from_port]
-                            log(f"Mapped {to_port} = {from_outputs[from_port]}")
-                        else:
-                            log(f"WARNING: {from_port} not found in {from_outputs}")
-                            log(f"Available outputs: {list(from_outputs.keys())}")
-                            kwargs[to_port] = None
+                if from_node_id in node_outputs:
+                    from_outputs = node_outputs[from_node_id]
+                    log(f"Source outputs: {from_outputs}")
+                    if from_port in from_outputs:
+                        kwargs[to_port] = from_outputs[from_port]
+                        log(f"Mapped {to_port} = {from_outputs[from_port]}")
                     else:
-                        log(f"WARNING: {from_node_id} not yet executed or no output")
+                        log(f"WARNING: {from_port} not found in {from_outputs}")
+                        log(f"Available outputs: {list(from_outputs.keys())}")
                         kwargs[to_port] = None
+                else:
+                    log(f"WARNING: {from_node_id} not yet executed or no output")
+                    kwargs[to_port] = None
 
-            log(f"Node {node_id} kwargs: {kwargs}")
+        log(f"Node {node_id} kwargs: {kwargs}")
 
-            # Get or compile function
-            node_data = node_functions.get(node_id_int)
-            if node_data is None or node_data['function'] is None:
-                func = create_node_function(
-                    node_info.get('code', ''),
-                    node_info.get('name', f'Node{node_id}'),
-                    node_id_int,
-                    node_info.get('inputs', []),
-                    node_info.get('outputs', [])
-                )
-                if func is None:
-                    node_outputs[node_id] = {'error': 'Failed to compile node function'}
-                    node_logs[node_id].append('ERROR: Failed to compile node function')
-                    continue
-                node_functions[node_id_int] = {'code': node_info.get('code', ''), 'function': func}
+        # Get or compile function
+        node_data = node_functions.get(node_id_int)
+        if node_data is None or node_data['function'] is None:
+            func = create_node_function(
+                node_info.get('code', ''),
+                node_info.get('name', f'Node{node_id}'),
+                node_id_int,
+                node_info.get('inputs', []),
+                node_info.get('outputs', [])
+            )
+            if func is None:
+                node_outputs[node_id] = {'error': 'Failed to compile node function'}
+                node_logs[node_id].append('ERROR: Failed to compile node function')
+                continue
+            node_functions[node_id_int] = {'code': node_info.get('code', ''), 'function': func}
 
-            func = node_functions[node_id_int]['function']
+        func = node_functions[node_id_int]['function']
 
-            # Execute the node
-            try:
-                stdout_capture = io.StringIO()
-                sys.stdout = stdout_capture
+        # Execute the node
+        try:
+            stdout_capture = io.StringIO()
+            sys.stdout = stdout_capture
 
-                log(f"Calling function with kwargs: {kwargs}")
-                result = func(**kwargs) if kwargs else func()
+            log(f"Calling function with kwargs: {kwargs}")
+            result = func(**kwargs) if kwargs else func()
 
-                sys.stdout = sys.__stdout__
-                output = stdout_capture.getvalue()
+            sys.stdout = sys.__stdout__
+            output = stdout_capture.getvalue()
 
-                if result is None:
-                    result = {}
+            if result is None:
+                result = {}
 
-                # Ensure all outputs are present
-                outputs_list = node_info.get('outputs', [])
-                if outputs_list:
-                    for port in outputs_list:
-                        port_name = port.get('name', 'out')
-                        if port_name not in result:
-                            result[port_name] = None
+            # Ensure all outputs are present
+            outputs_list = node_info.get('outputs', [])
+            if outputs_list:
+                for port in outputs_list:
+                    port_name = port.get('name', 'out')
+                    if port_name not in result:
+                        result[port_name] = None
 
-                node_outputs[node_id] = result
-                node_stdout[node_id] = output
-                node_logs[node_id].append(f"Execution completed. Output: {result}")
-                if output:
-                    node_logs[node_id].append(f"stdout: {output.strip()}")
+            node_outputs[node_id] = result
+            node_stdout[node_id] = output
+            node_logs[node_id].append(f"Execution completed. Output: {result}")
+            if output:
+                node_logs[node_id].append(f"stdout: {output.strip()}")
 
-            except Exception as e:
-                sys.stdout = sys.__stdout__
-                error_msg = str(e)
-                traceback_str = traceback.format_exc()
-                log(f"Error executing node {node_id}: {error_msg}")
-                log(traceback_str)
-                node_outputs[node_id] = {
-                    'error': error_msg,
-                    'traceback': traceback_str
-                }
-                node_stdout[node_id] = ''
-                node_logs[node_id].append(f"ERROR: {error_msg}")
+        except Exception as e:
+            sys.stdout = sys.__stdout__
+            error_msg = str(e)
+            traceback_str = traceback.format_exc()
+            log(f"Error executing node {node_id}: {error_msg}")
+            log(traceback_str)
+            node_outputs[node_id] = {
+                'error': error_msg,
+                'traceback': traceback_str
+            }
+            node_stdout[node_id] = ''
+            node_logs[node_id].append(f"ERROR: {error_msg}")
 
-        log("=" * 60)
-        log(f"Final outputs: {node_outputs}")
-        log("=" * 60)
+    log("=" * 60)
+    log(f"Final outputs: {node_outputs}")
+    log("=" * 60)
 
-        return jsonify({
-            'success': True,
-            'outputs': node_outputs,
-            'stdout': node_stdout,
-            'logs': logs,           # full graph logs
-            'node_logs': node_logs  # per-node logs
-        })
+    return jsonify({
+        'success': True,
+        'outputs': node_outputs,
+        'stdout': node_stdout,
+        'logs': logs,           # full graph logs
+        'node_logs': node_logs  # per-node logs
+    })
 
 @app.route('/graph/state', methods=['POST'])
 def update_graph_state():
