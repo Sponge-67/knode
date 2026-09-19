@@ -5,7 +5,7 @@ Build a graph visually, run it once, **simulate it through time**, sweep and
 randomise its parameters, and analyse its structure — for biology, engineering,
 complex systems, data analysis, design and general coding.
 
-![knode](https://github.com/user-attachments/assets/6f1032a0-4e53-4c0a-ac31-1869a32bbbfe)
+<img width="2136" height="2014" alt="knode" src="https://github.com/user-attachments/assets/8cfde738-b7da-4a91-b006-c77884900cce" />
 
 ## Run
 
