@@ -1,556 +1,581 @@
-# ================================================================
-# BACKEND SERVER - Flask
-# ================================================================
-# This server receives graph data (nodes and connections) from the frontend,
-# compiles Python code for each node, and executes the graph in topological order.
-# It exposes REST API endpoints for the frontend to call.
+"""
+knode server — serves the editor and executes graphs.
 
-from flask import Flask, request, jsonify, send_from_directory
-from flask_cors import CORS
-import json
-import sys
+    python server.py                 # http://127.0.0.1:5000
+    python server.py --port 8080
+    python server.py --host 0.0.0.0  # ONLY on a trusted network: nodes run arbitrary Python
+
+Requires: flask  (numpy optional; h5py optional for real HDF5 export)
+
+HTTP API (JSON in, JSON out; every POST body is an engine payload plus the listed options)
+----------------------------------------------------------------------------------------
+GET  /                          the editor (index.html) and its .js assets
+GET  /api/health                version, numpy / h5py availability
+GET  /library                   node templates + category colours      POST /library/user   save a node type
+GET  /examples                  example models                          DELETE /library/user/<id>
+POST /graph/execute             run once        {target?, cache?, dt?}
+POST /graph/simulate            simulate        {steps, dt, t0?, record?, max_points?}
+POST /session/start|step|stop   live mode       start {dt} → id;  step {id, n, params?, max_points?}
+POST /graph/analyze             structure       {weights?}
+POST /graph/sweep               1-D sweep       {node, param, values, target_node, target_port, mode, reduce}
+POST /graph/montecarlo          uncertainty     {factors, n, seed, target_node, target_port, mode, reduce}
+POST /graph/scenarios           variants        {scenarios: [{name, overrides}], mode, steps, dt}
+POST /graph/optimize            calibration     {factors, objective, method, budget, mode, steps, dt}
+POST /cache/clear               empty the result cache
+POST /node/<id>/execute         run one node with explicit inputs (code editor ▶ Test, Node Designer)
+POST /export/hdf5, /import/hdf5 real HDF5 files (needs h5py)
+Legacy 0.1 endpoints: /graph/state, /graph/compile, /node/<id>/update_code.
+
+Backend manager (localhost only — refused for remote clients even with --host 0.0.0.0):
+GET  /admin/info                 pid, uptime, Python, packages, sessions, cache, settings, supervisor
+GET  /admin/logs?since=N         request / event log (ring buffer of the last 2 000 lines)
+POST /admin/settings             {cache_size, session_idle_minutes, time_limit}
+POST /admin/restart              restart the server process (supervised: via knode.py; else re-exec)
+POST /admin/shutdown             stop the server (and the launcher)
+POST /admin/install              {package: numpy|h5py} pip-install an optional dependency
+DELETE /admin/sessions/<id>      end a live session
+
+Security: the server binds to 127.0.0.1 and only answers CORS requests from local pages, because
+executing a graph means executing its Python code.
+"""
+from __future__ import annotations
+
+import argparse
+import collections
 import io
-import traceback
-import inspect
-from collections import deque
+import json
 import os
+import platform
+import subprocess
+import sys
+import threading
+import time
+from urllib.parse import urlparse
 
-# Create Flask app
-app = Flask(__name__, static_folder='.', static_url_path='')
-# Enable CORS so the frontend (running on a different port) can communicate
-CORS(app)
+from flask import Flask, Response, request, send_file, send_from_directory
 
-# Store node functions and graph state in memory
-node_functions = {}          # Cache for compiled functions: { node_id: { 'code': str, 'function': callable } }
-graph_state = {'nodes': {}, 'connections': []}   # Current graph state from frontend
+import knode_engine as E
+import knode_examples as X
+import knode_library as L
+
+try:
+    import h5py
+except Exception:
+    h5py = None
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+app = Flask(__name__, static_folder=None)
+
+# ---------------------------------------------------------------- backend-manager state
+STARTED = time.time()
+SUPERVISED = os.environ.get("KNODE_SUPERVISED") == "1"   # started by knode.py (restart = exit code 3)
+EXIT_RESTART = 3
+LOG = collections.deque(maxlen=2000)                      # (seq, time, level, text) — shown in the Backend Manager
+_log_seq = [0]
+SETTINGS = {"time_limit": 120.0}
+OPTIONAL_PACKAGES = ("numpy", "h5py")                     # the only packages the UI may install
 
 
-# ----------------------------------------------------------------
-# NODE FUNCTION CREATION
-# ----------------------------------------------------------------
+def log(text, level="info"):
+    """Append a line to the in-memory log shown in the Backend Manager (and echo to the console)."""
+    _log_seq[0] += 1
+    LOG.append((_log_seq[0], time.time(), level, str(text)))
+    print(f"[{level}] {text}", file=sys.stderr)
 
-def create_node_function(code, node_name, node_id, inputs, outputs):
+# last graph pushed by the editor (kept for the legacy per-node endpoints)
+graph_state = {"nodes": {}, "connections": []}
+
+
+# ---------------------------------------------------------------- helpers
+
+def jresp(obj, status=200):
+    """JSON response that is always valid JSON (no NaN/Infinity literals).
+
+    0.7: engine reports are already JSON-safe, so they are encoded directly (compact separators);
+    only if that fails is the object passed through to_jsonable() — the generic conversion used to
+    walk every value of every trace a second time.
     """
-    Compile the user's Python code into a callable function.
-
-    The user's code is executed in a namespace that contains standard builtins and
-    a 'print' function that we can capture. The function definition should match
-    the node's input and output port names.
-
-    Parameters:
-        code (str): The Python code string.
-        node_name (str): Name of the node (used to locate the function).
-        node_id (int): Node ID for debugging.
-        inputs (list): List of input port dicts with 'name'.
-        outputs (list): List of output port dicts with 'name'.
-
-    Returns:
-        callable or None: A wrapper function that executes the user's code,
-                          or None if compilation fails.
-    """
-    # Extract port names for reference
-    input_names = [p.get('name', 'in') for p in inputs]
-    output_names = [p.get('name', 'out') for p in outputs]
-
-    print(f"Creating function for node: {node_name} (ID: {node_id})")
-    print(f"Inputs: {input_names}")
-    print(f"Outputs: {output_names}")
-
-    # Create a namespace with standard builtins and useful functions
-    # This isolates the user's code and prevents interference with the server.
-    namespace = {
-        '__builtins__': __builtins__,
-        'print': print,        # Allow printing, captured via stdout redirection
-        'len': len,
-        'str': str,
-        'int': int,
-        'float': float,
-        'list': list,
-        'dict': dict,
-        'tuple': tuple,
-        'bool': bool,
-        'sum': sum,
-        'max': max,
-        'min': min,
-        'abs': abs,
-        'sorted': sorted,
-        'enumerate': enumerate,
-        'zip': zip,
-        'range': range,
-        'map': map,
-        'filter': filter,
-        'traceback': traceback,
-        'inspect': inspect,
-    }
-
-    # Execute the user's code in the namespace
     try:
-        exec(code, namespace)
-    except Exception as e:
-        print(f"Error executing user code for node {node_name}: {e}")
-        traceback.print_exc()
-        return None
-
-    # Find the user's function in the namespace
-    user_func = None
-
-    # 1. Try to find function named after the node (common convention)
-    if node_name in namespace and callable(namespace[node_name]):
-        user_func = namespace[node_name]
-        print(f"Found function: {node_name}")
-    # 2. Try 'process' as a fallback
-    elif 'process' in namespace and callable(namespace['process']):
-        user_func = namespace['process']
-        print(f"Found function: process")
-    else:
-        # 3. Look for any callable function (not starting with '_')
-        for name, obj in namespace.items():
-            if callable(obj) and not name.startswith('_'):
-                user_func = obj
-                print(f"Found function: {name}")
-                break
-
-    if user_func is None:
-        print(f"No function found in code for node {node_name}")
-        return None
-
-    # Get the function's signature to know parameter names
-    sig = inspect.signature(user_func)
-    params = sig.parameters
-    param_names = list(params.keys())
-
-    print(f"Function parameters: {param_names}")
-
-    # Create a wrapper function that will be called by the backend
-    def wrapper(**kwargs):
-        """
-        Wrapper that calls the user's function with the correct arguments.
-
-        It maps input port names to function parameters. If a parameter name
-        does not match any input port, it uses the default value if available,
-        otherwise None.
-        """
-        print(f"Wrapper received kwargs: {kwargs}")
-
-        # Build argument list in the order of the function's parameters
-        args = []
-        for param_name in param_names:
-            if param_name in kwargs:
-                args.append(kwargs[param_name])
-            else:
-                # Use default value if available, else None
-                param = params[param_name]
-                if param.default != inspect.Parameter.empty:
-                    args.append(param.default)
-                else:
-                    args.append(None)
-
-        print(f"Calling function with args: {args}")
-
-        # Execute the user's function
-        result = user_func(*args)
-        print(f"Function returned: {result}")
-
-        # Ensure result is a dict (the frontend expects a dict with output port names)
-        if result is None:
-            result = {}
-        elif not isinstance(result, dict):
-            # If single value, map to the first output port or 'result'
-            if output_names:
-                result = {output_names[0]: result}
-            else:
-                result = {"result": result}
-
-        # Ensure all output ports are present in the result (default to None)
-        for out_name in output_names:
-            if out_name not in result:
-                result[out_name] = None
-
-        print(f"Final result: {result}")
-        return result
-
-    return wrapper
+        body = json.dumps(obj, allow_nan=False, separators=(",", ":"))
+    except (TypeError, ValueError):
+        body = json.dumps(E.to_jsonable(obj), allow_nan=False, separators=(",", ":"))
+    return Response(body, status=status, mimetype="application/json")
 
 
-# ----------------------------------------------------------------
-# GRAPH EXECUTION ORDER (Topological Sort)
-# ----------------------------------------------------------------
-
-def build_execution_order(nodes, connections):
-    """
-    Compute the execution order of nodes using topological sorting (Kahn's algorithm).
-
-    This ensures that a node is executed only after all its dependencies (upstream nodes)
-    have been executed. If the graph has cycles, the function falls back to the original
-    order of node IDs.
-
-    Parameters:
-        nodes (dict): Dictionary of node_id -> node_info
-        connections (list): List of connection dicts with 'from' and 'to' node IDs.
-
-    Returns:
-        list: A list of node IDs in execution order.
-    """
-    # Build adjacency list and in-degree count
-    graph = {node_id: [] for node_id in nodes.keys()}
-    in_degree = {node_id: 0 for node_id in nodes.keys()}
-
-    for conn in connections:
-        from_node = str(conn.get('from'))
-        to_node = str(conn.get('to'))
-        if from_node in graph and to_node in graph:
-            graph[from_node].append(to_node)
-            in_degree[to_node] = in_degree.get(to_node, 0) + 1
-
-    # Queue for nodes with no incoming edges (sources)
-    queue = deque([node_id for node_id in in_degree if in_degree[node_id] == 0])
-    execution_order = []
-
-    # Process queue
-    while queue:
-        node_id = queue.popleft()
-        execution_order.append(node_id)
-        for neighbor in graph.get(node_id, []):
-            in_degree[neighbor] -= 1
-            if in_degree[neighbor] == 0:
-                queue.append(neighbor)
-
-    # If not all nodes were processed (cycle detected), fallback to original order
-    if len(execution_order) != len(nodes):
-        execution_order = list(nodes.keys())
-
-    return execution_order
+def body():
+    """The request's JSON body, or {} when absent or malformed."""
+    return request.get_json(force=True, silent=True) or {}
 
 
-# ----------------------------------------------------------------
-# ROUTES
-# ----------------------------------------------------------------
+def _local_origin(origin: str) -> bool:
+    """CORS policy: only localhost pages, file:// pages ('null' origin) and this server's own host may call the API."""
+    if not origin or origin == "null":            # file:// pages send "null"
+        return True
+    host = urlparse(origin).hostname or ""
+    return host in ("localhost", "127.0.0.1", "::1") or host == request.host.split(":")[0]
 
-@app.route('/')
+
+@app.before_request
+def _t0():
+    """Remember when the request started (for the duration shown in the log)."""
+    request._t0 = time.perf_counter()
+
+
+@app.after_request
+def _access_log(resp):
+    """Record every API call (method, path, status, duration) except log polling itself."""
+    if not request.path.startswith("/admin/logs") and request.path != "/api/health":
+        ms = (time.perf_counter() - getattr(request, "_t0", time.perf_counter())) * 1000
+        log(f"{request.method} {request.path} → {resp.status_code} ({ms:.0f} ms)", "warn" if resp.status_code >= 400 else "info")
+    return resp
+
+
+@app.after_request
+def cors(resp):
+    """Add CORS headers for local origins (lets the editor be opened from file:// during development)."""
+    origin = request.headers.get("Origin")
+    if origin and _local_origin(origin):
+        resp.headers["Access-Control-Allow-Origin"] = origin
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    return resp
+
+
+@app.errorhandler(Exception)
+def on_error(e):
+    """Turn any unhandled exception into a JSON error (with traceback for 500s) instead of an HTML page."""
+    import traceback
+    code = getattr(e, "code", 500)
+    return jresp({"success": False, "error": f"{type(e).__name__}: {e}",
+                  "traceback": traceback.format_exc() if code == 500 else ""}, code if isinstance(code, int) else 500)
+
+
+# ---------------------------------------------------------------- static
+
+@app.route("/")
 def index():
-    """Serve the main HTML page."""
-    # Adjust the filename if your HTML file has a different name.
-    # 'index.html' should be in the same directory as this script.
-    return send_from_directory('.', 'knode.html.htm')
+    """Serve the editor."""
+    return send_from_directory(HERE, "index.html")
 
 
-@app.route('/node/<int:node_id>/update_code', methods=['POST'])
-def update_node_code(node_id):
-    """
-    Update the code for a specific node on the server.
-    This clears the cached function so it will be recompiled on next execution.
-    """
-    data = request.json
-    code = data.get('code', '')
-
-    # Clear cached function
-    node_functions[node_id] = {
-        'code': code,
-        'function': None   # Will be recompiled when needed
-    }
-
-    return jsonify({'success': True, 'node_id': node_id})
+@app.route("/<path:name>")
+def static_files(name):
+    """Serve the editor's own top-level assets (.js, .css, images); nothing outside the app folder."""
+    if name.endswith((".js", ".css", ".png", ".svg", ".html")) and "/" not in name.strip("/"):
+        return send_from_directory(HERE, name)
+    return jresp({"error": "not found"}, 404)
 
 
-@app.route('/node/<int:node_id>/execute', methods=['POST'])
-def execute_node(node_id):
-    """
-    Execute a single node with given inputs.
+# ---------------------------------------------------------------- meta
 
-    The frontend sends a JSON object with 'inputs' mapping input port names to values.
-    The server compiles the node's code (if not cached) and calls the function.
+@app.route("/api/health")
+def health():
+    """Version and optional-dependency report; the editor uses it for the status dot and feature switches."""
+    return jresp({"ok": True, "version": E.__version__, "python": platform.python_version(),
+                  "numpy": E.np is not None, "h5py": h5py is not None, "supervised": SUPERVISED,
+                  "pid": os.getpid(), "started": STARTED})
 
-    Returns:
-        JSON with 'success', 'output', 'stdout', and 'logs'.
-    """
-    data = request.json
-    inputs = data.get('inputs', {})
-    logs = []
 
-    # Retrieve node info from stored graph state
-    node_info = graph_state.get('nodes', {}).get(str(node_id))
-    if not node_info:
-        return jsonify({'error': f'Node {node_id} not found', 'logs': logs}), 404
+@app.route("/library")
+def library():
+    """All node templates (built-in + user) with category colours."""
+    return jresp(L.get_library())
 
-    # Get or compile the node function
-    node_data = node_functions.get(node_id)
-    if node_data is None or node_data['function'] is None:
-        func = create_node_function(
-            node_info.get('code', ''),
-            node_info.get('name', f'Node{node_id}'),
-            node_id,
-            node_info.get('inputs', []),
-            node_info.get('outputs', [])
-        )
-        if func is None:
-            return jsonify({'error': 'Failed to compile node function', 'logs': logs}), 500
-        node_functions[node_id] = {'code': node_info.get('code', ''), 'function': func}
 
-    func = node_functions[node_id]['function']
-
-    # Execute the function, capturing stdout
+@app.route("/library/user", methods=["POST"])
+def save_user_type():
+    """Save a node type designed in the editor (validated: code must compile and define a function)."""
+    t = body()
+    spec = E.NodeSpec("probe", t.get("name", "probe"), t.get("code", ""), t.get("inputs", []), t.get("outputs", []),
+                      dict(t.get("params", {})))
     try:
-        stdout_capture = io.StringIO()
-        sys.stdout = stdout_capture
-
-        # Build keyword arguments from input ports
-        kwargs = {}
-        for port in node_info.get('inputs', []):
-            port_name = port.get('name', 'in')
-            kwargs[port_name] = inputs.get(port_name, None)
-
-        logs.append(f"Calling function with kwargs: {kwargs}")
-        if not kwargs:
-            result = func()
-        else:
-            result = func(**kwargs)
-
-        # Restore stdout and get captured output
-        sys.stdout = sys.__stdout__
-        output = stdout_capture.getvalue()
-
-        if result is None:
-            result = {}
-
-        logs.append(f"Execution completed. Result: {result}")
-        if output:
-            logs.append(f"stdout: {output.strip()}")
-
-        return jsonify({
-            'success': True,
-            'output': result,
-            'stdout': output,
-            'logs': logs
-        })
-    except Exception as e:
-        # Restore stdout in case of error
-        sys.stdout = sys.__stdout__
-        return jsonify({
-            'error': str(e),
-            'traceback': traceback.format_exc(),
-            'logs': logs
-        }), 500
+        E.compile_node(spec)
+    except E.CompileError as e:
+        return jresp({"success": False, "error": str(e), "line": e.line}, 400)
+    try:
+        saved = L.save_user_template(t)
+    except ValueError as e:
+        return jresp({"success": False, "error": str(e)}, 400)
+    return jresp({"success": True, "template": saved})
 
 
-@app.route('/graph/execute', methods=['POST'])
+@app.route("/library/user/<tid>", methods=["DELETE"])
+def delete_user_type(tid):
+    """Delete a saved user node type."""
+    try:
+        L.delete_user_template(tid)
+    except KeyError:
+        return jresp({"success": False, "error": f"no user type '{tid}'"}, 404)
+    return jresp({"success": True})
+
+
+@app.route("/examples")
+def examples():
+    """Example models (layout + template references) for File ▸ Examples."""
+    return jresp({"examples": X.EXAMPLES})
+
+
+# ---------------------------------------------------------------- execution
+
+@app.route("/graph/execute", methods=["POST"])
 def execute_graph():
-    """
-    Execute the entire graph in topological order.
+    """Run once. Optional 'target' restricts to that node and its ancestors; 'cache' enables result reuse."""
+    d = body()
+    graph_state.update(nodes=d.get("nodes", {}), connections=d.get("connections", []))
+    rep = E.run(d, target=d.get("target"), time_limit=float(d.get("time_limit", SETTINGS["time_limit"])), dt=float(d.get("dt", 0.01)),
+                cache=bool(d.get("cache", False)))
+    return jresp(rep)
 
-    The frontend sends the full graph (nodes and connections). The server computes
-    execution order, executes each node, and passes outputs downstream.
 
-    Returns:
-        JSON with 'success', 'outputs' (per-node), 'stdout', 'logs', and 'node_logs'.
-    """
-    data = request.json
-    nodes = data.get('nodes', {})
-    connections = data.get('connections', {})
+@app.route("/graph/simulate", methods=["POST"])
+def simulate_graph():
+    """Fixed-step simulation; returns traces (downsampled to ≤ max_points) and final outputs."""
+    d = body()
+    rep = E.simulate(d, steps=int(d.get("steps", 1000)), dt=float(d.get("dt", 0.01)), t0=float(d.get("t0", 0)),
+                     record=d.get("record"), time_limit=float(d.get("time_limit", SETTINGS["time_limit"])),
+                     max_points=int(d.get("max_points", 5000)))
+    return jresp(rep)
 
-    logs = []   # Store all log messages
 
-    def log(msg):
-        logs.append(msg)
-        print(msg)
+@app.route("/session/start", methods=["POST"])
+def session_start():
+    """Start a live session (Live mode) for the posted model; returns its id and compile errors."""
+    d = body()
+    sid, s = E.session_start(d, dt=float(d.get("dt", 0.01)), t0=float(d.get("t0", 0)))
+    errs = {k: v for k, v in s.run.errors.items()}
+    return jresp({"success": not errs, "id": sid, "errors": errs, "cycles": s.cycles})
 
-    log("=" * 60)
-    log("GRAPH EXECUTION START")
-    log(f"Nodes: {list(nodes.keys())}")
-    log(f"Connections: {connections}")
-    log("=" * 60)
 
-    # Update server's graph state
-    graph_state['nodes'] = nodes
-    graph_state['connections'] = connections
+@app.route("/session/step", methods=["POST"])
+def session_step():
+    """Advance a live session by n steps with optional parameter changes; returns the new trace chunk."""
+    d = body()
+    try:
+        s = E.session_get(d.get("id"))
+    except KeyError as e:
+        return jresp({"success": False, "error": str(e), "expired": True}, 404)
+    n = max(1, min(int(d.get("n", 10)), 100000))
+    return jresp(s.step(n, params=d.get("params"), max_points=int(d.get("max_points", 200))))
 
-    # Clear cached functions to ensure fresh compilation
-    for node_id in nodes:
-        node_functions.pop(int(node_id), None)
 
-    # Build execution order
-    execution_order = build_execution_order(nodes, connections)
-    log(f"Execution order: {execution_order}")
+@app.route("/session/stop", methods=["POST"])
+def session_stop():
+    """End a live session."""
+    E.session_stop(body().get("id"))
+    return jresp({"success": True})
 
-    node_outputs = {}       # Store outputs of each node (by node_id string)
-    node_stdout = {}        # Store stdout per node
-    node_logs = {}          # Store per-node logs
 
-    # Execute nodes in order
-    for node_id in execution_order:
-        node_info = nodes.get(node_id)
-        if not node_info:
-            continue
+@app.route("/graph/scenarios", methods=["POST"])
+def scenarios_route():
+    """Run each named parameter variant and return all results (Run ▸ Scenarios)."""
+    d = body()
+    return jresp(E.scenarios(d, d.get("scenarios", []), mode=d.get("mode", "simulate"),
+                             steps=int(d.get("steps", 1000)), dt=float(d.get("dt", 0.01))))
 
-        node_id_int = int(node_id)
-        node_logs[node_id] = []
 
-        # Collect inputs from connections
-        kwargs = {}
-        for conn in connections:
-            if str(conn.get('to')) == node_id:
-                from_node_id = str(conn.get('from'))
-                from_port = conn.get('fromPort')
-                to_port = conn.get('toPort')
-                log(f"Processing connection: {from_node_id}.{from_port} -> {node_id}.{to_port}")
+@app.route("/graph/optimize", methods=["POST"])
+def optimize_route():
+    """Calibrate / optimise parameters (differential evolution or Nelder–Mead), budget capped at 5 000 runs."""
+    d = body()
+    return jresp(E.optimize(d, d["factors"], d["objective"], mode=d.get("mode", "simulate"), steps=int(d.get("steps", 500)),
+                            dt=float(d.get("dt", 0.01)), method=d.get("method", "de"), budget=min(int(d.get("budget", 300)), 5000),
+                            seed=int(d.get("seed", 0))))
 
-                if from_node_id in node_outputs:
-                    from_outputs = node_outputs[from_node_id]
-                    log(f"Source outputs: {from_outputs}")
-                    if from_port in from_outputs:
-                        kwargs[to_port] = from_outputs[from_port]
-                        log(f"Mapped {to_port} = {from_outputs[from_port]}")
-                    else:
-                        log(f"WARNING: {from_port} not found in {from_outputs}")
-                        log(f"Available outputs: {list(from_outputs.keys())}")
-                        kwargs[to_port] = None
-                else:
-                    log(f"WARNING: {from_node_id} not yet executed or no output")
-                    kwargs[to_port] = None
 
-        log(f"Node {node_id} kwargs: {kwargs}")
+@app.route("/cache/clear", methods=["POST"])
+def cache_clear():
+    """Empty the incremental result cache."""
+    E.clear_cache()
+    return jresp({"success": True})
 
-        # Get or compile function
-        node_data = node_functions.get(node_id_int)
-        if node_data is None or node_data['function'] is None:
-            func = create_node_function(
-                node_info.get('code', ''),
-                node_info.get('name', f'Node{node_id}'),
-                node_id_int,
-                node_info.get('inputs', []),
-                node_info.get('outputs', [])
-            )
-            if func is None:
-                node_outputs[node_id] = {'error': 'Failed to compile node function'}
-                node_logs[node_id].append('ERROR: Failed to compile node function')
-                continue
-            node_functions[node_id_int] = {'code': node_info.get('code', ''), 'function': func}
 
-        func = node_functions[node_id_int]['function']
+@app.route("/graph/analyze", methods=["POST"])
+def analyze_graph():
+    """Structural analysis: loops, depth, critical path, centralities, lint."""
+    d = body()
+    return jresp(E.analyze(d, weights=d.get("weights")))
 
-        # Execute the node
+
+@app.route("/graph/sweep", methods=["POST"])
+def sweep_graph():
+    """One-dimensional parameter sweep."""
+    d = body()
+    return jresp(E.sweep(d, d["node"], d["param"], d["values"], (d["target_node"], d["target_port"]),
+                         mode=d.get("mode", "run"), reduce=d.get("reduce", "last"),
+                         sim={"steps": int(d.get("steps", 500)), "dt": float(d.get("dt", 0.01))}))
+
+
+@app.route("/graph/montecarlo", methods=["POST"])
+def montecarlo_graph():
+    """Latin-hypercube uncertainty propagation with rank-correlation sensitivity (≤ 5 000 samples)."""
+    d = body()
+    n = min(int(d.get("n", 100)), 5000)
+    return jresp(E.montecarlo(d, d["factors"], (d["target_node"], d["target_port"]), n=n,
+                              mode=d.get("mode", "run"), reduce=d.get("reduce", "last"), seed=int(d.get("seed", 0)),
+                              sim={"steps": int(d.get("steps", 500)), "dt": float(d.get("dt", 0.01))}))
+
+
+# ---------------------------------------------------------------- legacy (0.1.x) endpoints
+
+@app.route("/graph/state", methods=["GET", "POST"])
+def state():
+    """Legacy 0.1 endpoint: store / return the last graph pushed by the editor."""
+    if request.method == "POST":
+        d = body()
+        graph_state.update(nodes=d.get("nodes", {}), connections=d.get("connections", []))
+        return jresp({"success": True})
+    return jresp(graph_state)
+
+
+@app.route("/graph/compile", methods=["POST"])
+def compile_graph():
+    """Compile every node and report syntax errors without executing anything."""
+    g = E.parse_graph(body())
+    errors = {}
+    for nid, spec in g.nodes.items():
         try:
-            stdout_capture = io.StringIO()
-            sys.stdout = stdout_capture
+            E.compile_node(spec)
+        except E.CompileError as e:
+            errors[nid] = {"error": str(e), "line": e.line}
+    return jresp({"success": not errors, "errors": errors})
 
-            log(f"Calling function with kwargs: {kwargs}")
-            result = func(**kwargs) if kwargs else func()
 
-            sys.stdout = sys.__stdout__
-            output = stdout_capture.getvalue()
+@app.route("/node/<node_id>/update_code", methods=["POST"])
+def update_code(node_id):
+    """Legacy 0.1 endpoint: update a node's code in the stored graph."""
+    n = graph_state["nodes"].get(str(node_id))
+    if n is not None:
+        n["code"] = body().get("code", n.get("code", ""))
+    return jresp({"success": True, "node_id": node_id})
 
-            if result is None:
-                result = {}
 
-            # Ensure all outputs are present
-            outputs_list = node_info.get('outputs', [])
-            if outputs_list:
-                for port in outputs_list:
-                    port_name = port.get('name', 'out')
-                    if port_name not in result:
-                        result[port_name] = None
+@app.route("/node/<node_id>/execute", methods=["POST"])
+def execute_node(node_id):
+    """Run one node in isolation with explicitly supplied inputs (code-editor ▶ Test)."""
+    d = body()
+    info = d.get("node") or graph_state["nodes"].get(str(node_id))
+    if not info:
+        return jresp({"success": False, "error": f"Node {node_id} not found — run the graph once first"}, 404)
+    single = {"nodes": {str(node_id): info}, "connections": []}
+    g = E.parse_graph(single)
+    spec = g.nodes[str(node_id)]
+    with E._capture():                      # serialise + route print() output into r.stdout
+        r = E.Run(g)
+        if not r.compile_all([str(node_id)]):
+            err = r.errors[str(node_id)]
+            return jresp({"success": False, "error": err["error"], "line": err.get("line"), "logs": []})
+        try:
+            out = r.call(str(node_id), d.get("inputs", {}) or {})
+        except Exception as exc:
+            r.fail(str(node_id), exc)
+            err = r.errors[str(node_id)]
+            return jresp({"success": False, "error": err["error"], "traceback": err["traceback"], "line": err["line"], "logs": []})
+    return jresp({"success": True, "output": out, "stdout": r.stdout.get(str(node_id), ""),
+                  "logs": [f"{spec.name}: {list(out)}"]})
 
-            node_outputs[node_id] = result
-            node_stdout[node_id] = output
-            node_logs[node_id].append(f"Execution completed. Output: {result}")
-            if output:
-                node_logs[node_id].append(f"stdout: {output.strip()}")
 
-        except Exception as e:
-            sys.stdout = sys.__stdout__
-            error_msg = str(e)
-            traceback_str = traceback.format_exc()
-            log(f"Error executing node {node_id}: {error_msg}")
-            log(traceback_str)
-            node_outputs[node_id] = {
-                'error': error_msg,
-                'traceback': traceback_str
-            }
-            node_stdout[node_id] = ''
-            node_logs[node_id].append(f"ERROR: {error_msg}")
+# ---------------------------------------------------------------- HDF5
 
-    log("=" * 60)
-    log(f"Final outputs: {node_outputs}")
-    log("=" * 60)
+@app.route("/export/hdf5", methods=["POST"])
+def export_hdf5():
+    """Real HDF5 export (needs h5py): graph JSON as an attribute, simulation traces as compressed datasets."""
+    if h5py is None:
+        return jresp({"success": False, "error": "h5py not installed (pip install h5py)"}, 501)
+    d = body()
+    buf = io.BytesIO()
+    with h5py.File(buf, "w") as f:
+        f.attrs["knode_version"] = E.__version__
+        f.attrs["graph_json"] = json.dumps(d.get("graph", {}))
+        tr = d.get("traces") or {}
+        if tr:
+            grp = f.create_group("traces")
+            for k, v in tr.items():
+                grp.create_dataset(k, data=[float("nan") if x is None else x for x in v], compression="gzip")
+        outs = d.get("outputs") or {}
+        if outs:
+            f.attrs["outputs_json"] = json.dumps(outs)
+    buf.seek(0)
+    return send_file(buf, mimetype="application/x-hdf5", as_attachment=True, download_name="knode_graph.h5")
 
-    return jsonify({
-        'success': True,
-        'outputs': node_outputs,
-        'stdout': node_stdout,
-        'logs': logs,
-        'node_logs': node_logs
+
+@app.route("/import/hdf5", methods=["POST"])
+def import_hdf5():
+    """Read a file written by export_hdf5 back into graph JSON + traces."""
+    if h5py is None:
+        return jresp({"success": False, "error": "h5py not installed (pip install h5py)"}, 501)
+    with h5py.File(io.BytesIO(request.get_data()), "r") as f:
+        graph = json.loads(f.attrs["graph_json"])
+        traces = {k: f["traces"][k][()].tolist() for k in f["traces"]} if "traces" in f else {}
+    return jresp({"success": True, "graph": graph, "traces": traces})
+
+
+# ---------------------------------------------------------------- backend manager (localhost only)
+
+def _local_request():
+    """Admin actions are allowed only from this machine, whatever --host says."""
+    return request.remote_addr in ("127.0.0.1", "::1", "localhost")
+
+
+def _admin_guard():
+    """None if the request may use management endpoints, else a 403 response to return."""
+    if not _local_request():
+        return jresp({"success": False, "error": "backend management is only available from this machine"}, 403)
+    return None
+
+
+def _pkg_version(name):
+    """Installed version of a package, or None if it is not installed."""
+    try:
+        from importlib.metadata import version
+        return version(name)
+    except Exception:
+        return None
+
+
+@app.route("/admin/info")
+def admin_info():
+    """Everything the Backend Manager shows: process, environment, sessions, cache, settings."""
+    g = _admin_guard()
+    if g:
+        return g
+    try:
+        import resource
+        rss_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024 if sys.platform != "darwin" else 1024 * 1024)
+    except Exception:
+        rss_mb = None
+    now = time.monotonic()
+    sessions = [{"id": sid, "steps": s.k, "t": s.run.t, "idle_s": round(now - s.last_used, 1), "nodes": len(s.graph.nodes),
+                 "stopped": s.stopped} for sid, s in E._SESSIONS.items()]
+    return jresp({
+        "version": E.__version__, "pid": os.getpid(), "uptime_s": round(time.time() - STARTED, 1),
+        "python": platform.python_version(), "executable": sys.executable, "platform": platform.platform(),
+        "cwd": HERE, "supervised": SUPERVISED, "peak_memory_mb": rss_mb,
+        "packages": {p: _pkg_version(p) for p in ("flask", "numpy", "h5py")},
+        "user_library": L.USER_DIR, "sessions": sessions,
+        "cache": {"entries": len(E._CACHE), "capacity": E._CACHE_MAX},
+        "settings": dict(SETTINGS, cache_size=E._CACHE_MAX, session_idle_minutes=E.SESSION_IDLE_S / 60, workers=E.WORKERS),
+        "cpu_count": os.cpu_count(), "workers_in_use": E.worker_count(),     # parallel studies (0 = serial)
+        "compiled_nodes": len(E._COMPILE_CACHE),
     })
 
 
-@app.route('/graph/state', methods=['POST'])
-def update_graph_state():
-    """
-    Update the server's graph state with new nodes and connections.
-    Also compiles all node functions for faster execution.
-    """
-    data = request.json
-    graph_state['nodes'] = data.get('nodes', {})
-    graph_state['connections'] = data.get('connections', [])
-
-    # Pre-compile all functions for faster execution
-    for node_id, node_info in graph_state['nodes'].items():
-        node_id_int = int(node_id)
-        if node_id_int not in node_functions:
-            func = create_node_function(
-                node_info.get('code', ''),
-                node_info.get('name', f'Node{node_id}'),
-                node_id_int,
-                node_info.get('inputs', []),
-                node_info.get('outputs', [])
-            )
-            if func:
-                node_functions[node_id_int] = {
-                    'code': node_info.get('code', ''),
-                    'function': func
-                }
-
-    return jsonify({'success': True})
+@app.route("/admin/logs")
+def admin_logs():
+    """Log lines with sequence number > since (the UI polls incrementally)."""
+    g = _admin_guard()
+    if g:
+        return g
+    since = int(request.args.get("since", 0))
+    return jresp({"lines": [list(x) for x in LOG if x[0] > since], "last": _log_seq[0]})
 
 
-@app.route('/graph/state', methods=['GET'])
-def get_graph_state():
-    """Return the current graph state."""
-    return jsonify(graph_state)
+@app.route("/admin/settings", methods=["POST"])
+def admin_settings():
+    """Change runtime limits: result-cache capacity, live-session idle timeout, default time limit."""
+    g = _admin_guard()
+    if g:
+        return g
+    d = body()
+    if "cache_size" in d:
+        E._CACHE_MAX = max(0, min(100000, int(d["cache_size"])))
+        while len(E._CACHE) > E._CACHE_MAX:
+            E._CACHE.popitem(last=False)
+    if "session_idle_minutes" in d:
+        E.SESSION_IDLE_S = max(60, float(d["session_idle_minutes"]) * 60)
+    if "time_limit" in d:
+        SETTINGS["time_limit"] = max(1.0, float(d["time_limit"]))
+    if "workers" in d:                                        # 0 = automatic, -1 = serial, n = fixed count
+        E.WORKERS = max(-1, min(64, int(d["workers"])))
+        E.shutdown_pool()                                     # the pool is recreated at the new size on next use
+    log(f"settings changed: {d}")
+    return admin_info()
 
 
-@app.route('/graph/compile', methods=['POST'])
-def compile_graph():
-    """
-    Compile all node functions without executing.
-    Useful for pre-loading code.
-    """
-    data = request.json
-    nodes = data.get('nodes', {})
-
-    for node_id, node_info in nodes.items():
-        node_id_int = int(node_id)
-        code = node_info.get('code', '')
-        func = create_node_function(
-            code,
-            node_info.get('name', f'Node{node_id}'),
-            node_id_int,
-            node_info.get('inputs', []),
-            node_info.get('outputs', [])
-        )
-        if func:
-            node_functions[node_id_int] = {
-                'code': code,
-                'function': func
-            }
-
-    return jsonify({'success': True})
+def _exit_later(code):
+    """Exit shortly after the HTTP response has been sent (so the UI receives it)."""
+    def go():
+        """Background thread body: wait for the response to be sent, then re-exec or exit with `code`."""
+        time.sleep(0.4)
+        if code == EXIT_RESTART and not SUPERVISED:
+            log("restarting (re-exec)")
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+        os._exit(code)
+    threading.Thread(target=go, daemon=True).start()
 
 
-# ----------------------------------------------------------------
-# MAIN ENTRY POINT
-# ----------------------------------------------------------------
+@app.route("/admin/restart", methods=["POST"])
+def admin_restart():
+    """Restart the server process: reloads code, optional packages and the user library."""
+    g = _admin_guard()
+    if g:
+        return g
+    log("restart requested from the UI")
+    _exit_later(EXIT_RESTART)
+    return jresp({"success": True, "supervised": SUPERVISED})
 
-if __name__ == '__main__':
-    # Run the Flask development server
-    # Debug=True provides auto-reload and detailed error pages.
-    # host='0.0.0.0' makes it accessible on the local network.
-    app.run(debug=True, host='0.0.0.0', port=5000)
+
+@app.route("/admin/shutdown", methods=["POST"])
+def admin_shutdown():
+    """Stop the server (the knode.py launcher exits too)."""
+    g = _admin_guard()
+    if g:
+        return g
+    log("shutdown requested from the UI")
+    _exit_later(0)
+    return jresp({"success": True})
+
+
+@app.route("/admin/install", methods=["POST"])
+def admin_install():
+    """pip-install one of the optional packages into this Python (takes effect after a restart)."""
+    g = _admin_guard()
+    if g:
+        return g
+    pkg = body().get("package")
+    if pkg not in OPTIONAL_PACKAGES:
+        return jresp({"success": False, "error": f"only {', '.join(OPTIONAL_PACKAGES)} can be installed from the UI"}, 400)
+    log(f"installing {pkg} …")
+    cmd = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", pkg]
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    except Exception as e:
+        return jresp({"success": False, "error": str(e)}, 500)
+    if p.returncode != 0 and "externally-managed" in (p.stderr or ""):
+        cmd.append("--break-system-packages")               # Debian/Ubuntu system Python (PEP 668)
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    ok = p.returncode == 0
+    log(f"install {pkg}: {'ok' if ok else 'failed'}", "info" if ok else "error")
+    return jresp({"success": ok, "output": (p.stdout + p.stderr)[-6000:], "restart_needed": ok})
+
+
+@app.route("/admin/sessions/<sid>", methods=["DELETE"])
+def admin_kill_session(sid):
+    """End a live session (e.g. one left running by another browser tab)."""
+    g = _admin_guard()
+    if g:
+        return g
+    E.session_stop(sid)
+    log(f"session {sid} ended from the Backend Manager")
+    return jresp({"success": True})
+
+
+# ---------------------------------------------------------------- main
+
+def main():
+    """Command-line entry point: parse --host/--port/--debug and start the server (localhost by default)."""
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--port", type=int, default=5000)
+    ap.add_argument("--debug", action="store_true")
+    a = ap.parse_args()
+    if a.host not in ("127.0.0.1", "localhost", "::1"):
+        print("WARNING: nodes execute arbitrary Python. Anyone who can reach "
+              f"{a.host}:{a.port} can run code on this machine.", file=sys.stderr)
+    print(f"knode {E.__version__}  →  http://{'127.0.0.1' if a.host == '0.0.0.0' else a.host}:{a.port}")
+    print(f"user node types: {L.USER_DIR}")
+    log(f"knode {E.__version__} started on {a.host}:{a.port} (pid {os.getpid()}{', supervised' if SUPERVISED else ''})")
+    app.run(host=a.host, port=a.port, debug=a.debug, threaded=True)
+
+
+if __name__ == "__main__":
+    main()
