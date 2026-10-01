@@ -1,11 +1,11 @@
-# knode 0.7
+# knode 0.8.2
 
 Node-based modelling, simulation and data-flow programming with embedded Python.
 Build a graph visually, run it once, **simulate it through time**, sweep and
 randomise its parameters, and analyse its structure — for biology, engineering,
 complex systems, data analysis, design and general coding.
 
-<img width="2136" height="2014" alt="knode" src="https://github.com/user-attachments/assets/8cfde738-b7da-4a91-b006-c77884900cce" />
+![knode](https://github.com/user-attachments/assets/6f1032a0-4e53-4c0a-ac31-1869a32bbbfe)
 
 ## Run
 
@@ -17,6 +17,80 @@ python knode.py              # starts the backend, opens the editor, supervises 
 Or double-click **start-windows.bat**, **start-mac.command** or **start.sh**. `python server.py` still works
 for a plain, unsupervised server. The backend binds to **localhost only** by default; nodes execute
 arbitrary Python, so only use `--host 0.0.0.0` on a network you trust.
+
+## New in 0.8.2 — lower-CPU network simulation and expanded network lab
+
+Network simulation now has an **event-driven idle fast path**. Built-in routers, switches, APs, bridges, hubs,
+hosts, packet monitors, Internet gateways, consoles and links no longer execute their Python model on every
+fixed simulation tick when nothing can happen. Packet inputs, host ping timers and delayed-link queues wake the
+node when needed; ordinary scientific/dynamic nodes retain the original every-step semantics. Device interface,
+route and interface-address parsing is also cached until configuration changes. Simulation reports expose
+`idle_skips` so the optimisation is visible rather than hidden.
+
+On an internal benchmark with **100 idle four-port switches for 1,000 steps**, the simulation-loop wall time on
+the development machine fell from about **441 ms to 147 ms** (roughly 3×), with 100 initial device calls and
+100,000 idle ticks skipped. Actual gains depend on topology and traffic: busy packet paths still execute normally.
+
+**Live mode** now defaults to **eco** pacing. Eco uses shorter adaptive bursts and yields between backend chunks
+instead of intentionally saturating a CPU core. Choose **max** in the live-speed selector for the old maximum-
+throughput behaviour, or choose a fixed steps/frame value.
+
+The Networking palette is also larger: **Ethernet Hub, Network Bridge, Network Server, Wireless Laptop**, plus
+one-click hardware nodes for the existing **MikroTik RB5009, CRS326-24G-2S+RM, cAP ax, Cisco ISR 4331,
+Catalyst C9200L-24T-4G and Catalyst 9115** presets. The preset selector and compact/all-physical-port modes remain
+available. New ready-made examples cover **two routed subnets, wired+Wi-Fi LAN, branch WAN with delay/loss,
+packet taps, mixed-vendor office hardware, and the host diagnostics console**, in addition to the switch-ping and
+real-Internet starters.
+
+## New in 0.8.1 — real Internet gateway and network console
+
+The **Networking** library now also contains **Internet (Real Host)** and **Network Console** nodes.
+
+- **Internet (Real Host)** is an opt-in gateway from a simulated topology to the machine running the knode backend.
+  ICMP echo requests, DNS-query frames and TCP-probe frames can be translated into real host-network operations; measured
+  replies are injected back into the model. This is intentionally an application-level diagnostic bridge rather than a raw
+  TUN/TAP/Ethernet bridge, so it does not require knode to take over a real interface.
+- Host-network access is **disabled by default** on the Internet node. Public destinations are allowed when enabled; probing
+  private, loopback or link-local destinations requires the separate `allow_private_targets` option. Repeated probes can be
+  cached briefly and are rate-bounded per simulation step.
+- **Network Console** provides bounded diagnostics on the backend host. Supported commands are `ping HOST [COUNT]`,
+  `traceroute HOST [MAX_HOPS]` / `tracepath`, `dns HOST`, `tcp HOST PORT`, read-only `ip addr|route|neigh|link`,
+  `hostname`, and `help`. The implementation tokenises commands itself, launches no shell, applies timeouts and limits output.
+- The Properties panel has **Run command now** for Console nodes and a one-click real-connectivity test for Internet nodes.
+  When knode runs normally on localhost, these operations therefore use the user's own machine/network. If the editor is
+  pointed at a remote backend, they use that backend machine instead.
+
+For a topology test, connect a **Network Host / PC** to **Internet (Real Host)** in both directions, enable the Internet node,
+set the host's `ping_destination` to a public IP, and use **▶▶ Simulate**. The host will receive a simulated echo reply only
+when the backend machine's corresponding real probe succeeds.
+
+## New in 0.8 — network devices and packet-level topology simulation
+
+knode can now model ordinary network topologies with the same nodes, wires, state and simulation engine used by
+other models. Open **Networking** in the node library for **Network Device, Router, Ethernet Switch, Wireless
+Access Point, Network Host / PC, Packet Monitor, and Duplex Link**.
+
+- **Switch / bridge / AP** modes learn source MAC addresses and forward known unicast frames while flooding
+  broadcasts and unknown destinations.
+- **Router** mode performs longest-prefix IPv4 routing from editable `CIDR=interface[,next-hop]` rules, decrements
+  TTL and can answer ICMP echo requests addressed to one of its modelled interface IPs.
+- **Host / PC** nodes can generate periodic pings and answer echo requests. Their status reports sent/received
+  packets, echo replies and the traversed-device trace.
+- **Duplex Link** adds per-direction propagation delay (in simulation steps) and packet loss; **Packet Monitor**
+  is an inline tap with frame/byte counters and the last observed packet.
+- **Hardware presets** can be applied from Properties. Built-ins include MikroTik RB5009UG+S+IN,
+  CRS326-24G-2S+RM and cAP ax, plus Cisco ISR 4331, Catalyst C9200L-24T-4G and Catalyst 9115. Large switch
+  presets start with a compact useful subset of interfaces; **All physical ports** exposes the complete port list.
+  Generic router/switch/AP presets are included, and the current device configuration can be saved as a local
+  custom preset.
+- Network nodes use normal dynamic ports and normal graph serialization, so topology models work with undo/redo,
+  groups, PNG/JSON export, CLI/headless execution, live results and the existing analyser.
+
+For a bidirectional direct connection, draw one wire in each direction. For an impaired full-duplex path, put a
+**Duplex Link** between the endpoints (`a → to_b`, `b → to_a`). Use **▶▶ Simulate** for network models: each
+stateful device advances traffic by one hop per step. This is a compact packet/topology simulator, not an IOS or
+RouterOS binary emulator; vendor presets describe interface layouts while forwarding behaviour remains knode's
+portable model.
 
 ## New in 0.7 — CPU & GPU utilisation
 
@@ -34,7 +108,7 @@ arbitrary Python, so only use `--host 0.0.0.0` on a network you trust.
 - **All CPU cores for studies**: parameter sweeps, Monte-Carlo samples, scenarios and every generation of the
   differential-evolution optimiser run on a pool of worker processes (automatic: cores − 1, serial on one core;
   Backend ▸ Settings or `KNODE_WORKERS`). Results are bit-identical to serial execution (`tests/test_parallel.py`).
-- **Live mode** requests the next chunk before drawing the current one, and **auto** sizes chunks to ~25 ms.
+- **Live mode** offers **eco** (default CPU-saver) and **max** throughput pacing; max retains pipelined adaptive chunks while eco yields between shorter bursts.
 - **Editor**: zero work while idle, one draw per display frame, opaque canvas, native curve paths instead of
   sampled wires, off-screen wire culling, memoised text layout.
 - **Measured and rejected**: a GPU pattern-filled grid (slower at fractional zoom than one stroked path).
@@ -174,7 +248,7 @@ sheet (?) · universal-nodes guide (Help).
 
 | | |
 |---|---|
-| **Library** (sidebar, `Tab`, double-click canvas) | 83 node types in 13 categories + your own |
+| **Library** (sidebar, `Tab`, double-click canvas) | 94 node types in 14 categories + your own |
 | **▶ Run** (`Ctrl+Enter`) | single pass; results are drawn under each node |
 | **▶▶ Simulate** (`Ctrl+Shift+Enter`) | fixed-step time integration with persistent node state |
 | **📈 Plot** (`P`) | time series, phase portraits (any series as X), arrays, log/normalise, CSV/PNG export |

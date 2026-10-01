@@ -23,6 +23,7 @@ POST /graph/scenarios           variants        {scenarios: [{name, overrides}],
 POST /graph/optimize            calibration     {factors, objective, method, budget, mode, steps, dt}
 POST /cache/clear               empty the result cache
 POST /node/<id>/execute         run one node with explicit inputs (code editor ▶ Test, Node Designer)
+POST /network/console          bounded localhost-only host-network diagnostic command
 POST /export/hdf5, /import/hdf5 real HDF5 files (needs h5py)
 Legacy 0.1 endpoints: /graph/state, /graph/compile, /node/<id>/update_code.
 
@@ -57,6 +58,7 @@ from flask import Flask, Response, request, send_file, send_from_directory
 import knode_engine as E
 import knode_examples as X
 import knode_library as L
+import knode_network as N
 
 try:
     import h5py
@@ -213,6 +215,18 @@ def delete_user_type(tid):
 def examples():
     """Example models (layout + template references) for File ▸ Examples."""
     return jresp({"examples": X.EXAMPLES})
+
+
+@app.route("/network/console", methods=["POST"])
+def network_console():
+    """Run one bounded host-network diagnostic from the local editor only."""
+    g = _admin_guard()
+    if g:
+        return g
+    d = body()
+    r = N.run_console_command(d.get("command", "help"), timeout=d.get("timeout", 8.0),
+                              allow_private=bool(d.get("allow_private", True)))
+    return jresp(r, 200 if r.get("success") else 400)
 
 
 # ---------------------------------------------------------------- execution

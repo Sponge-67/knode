@@ -455,8 +455,8 @@
 
   // ====================================================================== live mode (streaming session)
   // spf = fixed steps per frame; auto = adapt the chunk size (autoN) to the round-trip time; inflight = the
-  // pipelined request for the next chunk (see tick).
-  const L = SD.live = { on: false, playing: false, sid: null, spf: 5, auto: true, autoN: 5, inflight: null, busy: false, sig: null, fps: 0, lastT: 0, steps: 0 };
+  // pipelined request for the next chunk (see tick). Eco mode deliberately leaves a short idle gap between chunks to lower CPU use.
+  const L = SD.live = { on: false, playing: false, sid: null, spf: 5, auto: true, eco: true, autoN: 5, inflight: null, busy: false, sig: null, fps: 0, lastT: 0, steps: 0 };
   /**
    * Signature of everything that requires restarting a live session: code, ports, wires, groups, flags,
    * wireless channels. Parameter values are excluded — those are sent live without a restart.
@@ -523,25 +523,28 @@
    * the current parameters, append traces, refresh results, plot (≤ 16 Hz) and dashboard; pause on stop.
    */
   async function tick(ts) {
-    if (!L.on) return;
-    if (!L.playing || L.busy) { if (L.on) requestAnimationFrame(tick); return; }
+    if (!L.on || !L.playing) return;                 // paused live sessions do zero animation-loop work
+    if (L.busy) { setTimeout(() => { if (L.on && L.playing) requestAnimationFrame(tick); }, 16); return; }
     L.busy = true;
+    let cycleMs = 0;
     try {
       const payload = KS.serialize();
       if (structureSig(payload) !== L.sig) { L.busy = false; L.inflight = null; await liveStart(true); KS.status('Live: model structure changed — restarted'); return; }
       if (!L.inflight) L.inflight = requestChunk();
       const sid = L.sid;
       const { res, n, ms } = await L.inflight;
+      cycleMs = ms;
       L.inflight = null;
       if (sid !== L.sid) return;                               // session was restarted meanwhile: drop the stale chunk
       if (res.expired) { L.busy = false; await liveStart(true); return; }
       // 0.7 — pipelining: ask for the next chunk *before* processing this one, so the server computes
       // it while the browser parses, renders and plots (both processes stay busy instead of alternating).
-      if (!res.stopped && L.playing) L.inflight = requestChunk();
+      if (!res.stopped && L.playing && !L.eco) L.inflight = requestChunk();
       if (L.auto && ms > 0) {
-        // adaptive chunk size: aim for ~25 ms per round trip (smooth frame rate, little request overhead)
-        const ideal = n * 25 / ms;
-        L.autoN = Math.max(1, Math.min(5000, Math.round(0.7 * L.autoN + 0.3 * ideal)));
+        // Adaptive chunk size: Eco uses slightly shorter bursts, Max keeps the previous throughput target.
+        const targetMs = L.eco ? 18 : 25;
+        const ideal = n * targetMs / ms;
+        L.autoN = Math.max(1, Math.min(L.eco ? 1000 : 5000, Math.round(0.7 * L.autoN + 0.3 * ideal)));
       }
       if (res.chunk) appendChunk(res.chunk);
       KS.lastSim.outputs = res.outputs;
@@ -570,7 +573,13 @@
     } catch (e) {
       L.playing = false; KS.status(`<span class="ks-err">Live: ${esc(e.message)}</span>`); updateLiveUI();
     } finally { L.busy = false; }
-    if (L.on) requestAnimationFrame(tick);
+    if (L.on && L.playing) {
+      if (L.eco) {
+        // Yield roughly one compute-burst worth of wall time (bounded) instead of saturating a core.
+        const rest = Math.max(8, Math.min(60, cycleMs || 16));
+        setTimeout(() => { if (L.on && L.playing) requestAnimationFrame(tick); }, rest);
+      } else requestAnimationFrame(tick);
+    }
   }
   /**
    * Send one /session/step request (steps = fixed setting, or the adaptive size in auto mode).
@@ -894,11 +903,11 @@
     const live = document.createElement('div'); live.id = 'knLive';
     live.innerHTML = `<button id="knLiveBtn">●</button><span class="rec" id="knLiveRec" style="display:none">LIVE</span>
       <button id="knLivePlay" title="Play / pause (Space)">▶</button><button id="knLiveRew" title="Restart from t = 0">⏮</button>
-      <select id="knLiveSpeed" title="steps per frame — auto adapts to the model's speed"><option value="auto" selected>auto</option>${[1, 2, 5, 10, 20, 50, 100, 500].map(n => `<option>${n}</option>`).join('')}</select>
+      <select id="knLiveSpeed" title="Live simulation pacing — eco lowers CPU; max runs at full throughput"><option value="eco" selected>eco</option><option value="auto">max</option>${[1, 2, 5, 10, 20, 50, 100, 500].map(n => `<option>${n}</option>`).join('')}</select>
       <span class="clock" id="knLiveClock">live</span>`;
     q.insertBefore(live, $('#knRun'));
     $('#knLiveBtn').onclick = SD.toggleLive; $('#knLivePlay').onclick = SD.playPause; $('#knLiveRew').onclick = SD.rewind;
-    $('#knLiveSpeed').onchange = e => { L.auto = e.target.value === 'auto'; if (!L.auto) L.spf = +e.target.value; };
+    $('#knLiveSpeed').onchange = e => { const v = e.target.value; L.eco = v === 'eco'; L.auto = v === 'eco' || v === 'auto'; if (!L.auto) L.spf = +v; L.inflight = null; };
     const dash = document.createElement('button'); dash.className = 'kn-btn'; dash.textContent = '🎛'; dash.title = 'Dashboard (Ctrl+Shift+D)';
     dash.onclick = () => { const d = $('#knDash'); if (d && d.classList.contains('active')) d.classList.remove('active'); else SD.openDash(); };
     q.insertBefore(dash, $('#ksDot'));

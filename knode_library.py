@@ -32,6 +32,7 @@ CATEGORY_COLORS = {
     "Optimisation": "#ee5a24",
     "Design": "#ff9ff3",
     "Text & Code": "#c8d6e5",
+    "Networking": "#18a6a6",
 }
 
 TEMPLATES = []
@@ -739,9 +740,12 @@ import os as _os
 import re as _re
 
 import knode_universal as _U
+import knode_network as _N
 
 CATEGORY_COLORS.update(_U.UNIVERSAL_COLORS)
 for _t in _U.U:
+    TEMPLATES.append(_t)
+for _t in _N.TEMPLATES:
     TEMPLATES.append(_t)
 for _t in TEMPLATES:
     _t.setdefault("ports", None)
@@ -818,7 +822,7 @@ def get_library():
     cats = dict(CATEGORY_COLORS)
     for t in user:
         cats.setdefault(t["category"], t.get("color", "#e1b12c"))
-    return {"categories": cats, "templates": TEMPLATES + user}
+    return {"categories": cats, "templates": TEMPLATES + user, "network_presets": copy.deepcopy(_N.PRESETS)}
 
 
 def get_template(tid):

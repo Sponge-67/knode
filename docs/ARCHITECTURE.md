@@ -11,6 +11,7 @@ extend it. For features and usage see `README.md`; inside the app press **F1**.
 | `knode_science.js` | frontend | server integration: library palette, run / simulate, plot, analysis, sweeps & Monte Carlo, examples, value overlays, parameter panel |
 | `knode_ui.js` | frontend | menubar, library sidebar, groups (enter/exit/ungroup), Node Designer, minimap, find |
 | `knode_studio.js` | frontend | live mode, dashboard, node flags, frames, link-drag search, wire probes, scenarios, calibration, PNG models |
+| `knode_network.js` | frontend | network-device preset UI, compact/full interface expansion, network subtitles/status |
 | `knode_about.js` | frontend | About & Guide centre |
 | `knode_wires.js` | frontend | typed wires & ports, routing styles, tooltips, snapping, insert-on-wire, reroute, knife |
 | `knode_menu.js` | frontend | context-sensitive right-click menus (generic menu component + per-target menus) |
@@ -20,6 +21,7 @@ extend it. For features and usage see `README.md`; inside the app press **F1**.
 | `knode_engine.py` | backend | parsing, scheduling, execution, simulation, sessions, studies, optimisation, analysis |
 | `knode_std.py` | backend | numerical library available to node code as `ks` |
 | `knode_library.py` | backend | built-in templates, user library, graph builders |
+| `knode_network.py` | backend | packet-level router/switch/AP/host/link templates and vendor hardware presets |
 | `knode_universal.py` | backend | universal nodes and the port-rule language |
 | `knode_examples.py` | backend | example models (shared by UI, CLI and tests) |
 | `knode_cli.py` | tool | headless command-line runner |
@@ -175,3 +177,12 @@ unoptimised engine, including the exact random stream of the agent-based model.
 * JavaScript: `/** … */` on every function; section banners `// ===== name` inside each file.
 * Numerical code states its method, order/stability conditions and a reference.
 * No new runtime dependencies beyond Flask; numpy and h5py stay optional.
+
+### Network-device templates (0.8)
+
+Network frames are ordinary JSON-safe Python dicts carried over normal wires. Router/switch/AP/host templates are
+stateful, so in simulation a packet advances one device hop per step. The frontend reads `network_presets` from the
+normal `/library` response and applies a preset by changing ordinary node parameters then calling `syncPorts`; no
+network-only graph format exists. This keeps network models compatible with CLI execution, groups and existing
+serialization. Large hardware presets expose a compact interface subset by default and retain a full physical-port
+list for explicit expansion in the Properties panel.

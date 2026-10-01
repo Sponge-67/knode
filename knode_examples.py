@@ -333,6 +333,122 @@ EXAMPLES += [
 ]
 
 
+EXAMPLES += [
+    {
+        "id": "network_switch_ping", "domain": "Networking", "title": "Two PCs through an Ethernet switch",
+        "description": "Packet Tracer-style starter topology. PC 1 periodically pings PC 2; the switch learns both MAC addresses. Use Simulate and inspect each node's Network status.",
+        "mode": "simulate", "steps": 80, "dt": 1,
+        "nodes": [
+            {"tpl": "network_host", "x": 40, "y": 100, "name": "PC 1", "params": {"hostname": "pc1", "ip": "192.168.1.10", "mac": "02:00:00:00:00:10", "ping_destination": "192.168.1.20", "send_every": 10}},
+            {"tpl": "network_switch", "x": 340, "y": 100, "name": "Switch 1", "params": {"interfaces": "eth1,eth2"}},
+            {"tpl": "network_host", "x": 650, "y": 100, "name": "PC 2", "params": {"hostname": "pc2", "ip": "192.168.1.20", "mac": "02:00:00:00:00:20", "ping_destination": ""}},
+        ],
+        "wires": [[0, "eth0", 1, "eth1"], [1, "eth1", 0, "eth0"], [2, "eth0", 1, "eth2"], [1, "eth2", 2, "eth0"]],
+    },
+    {
+        "id": "network_real_internet", "domain": "Networking", "title": "PC to the real Internet",
+        "description": "A safe starter for host-backed connectivity. The Internet node starts disabled: enable it in Properties, then Simulate to make PC 1's ping use the backend machine's real network and return the measured result into the topology.",
+        "mode": "simulate", "steps": 20, "dt": 1,
+        "nodes": [
+            {"tpl": "network_host", "x": 80, "y": 120, "name": "PC 1", "params": {"hostname": "pc1", "ip": "192.0.2.10", "mac": "02:00:00:00:00:10", "ping_destination": "1.1.1.1", "send_every": 5}},
+            {"tpl": "network_internet", "x": 420, "y": 120, "name": "Internet", "params": {"enabled": False, "test_target": "1.1.1.1"}},
+        ],
+        "wires": [[0, "eth0", 1, "lan"], [1, "lan", 0, "eth0"]],
+    },
+]
+
+
+EXAMPLES += [
+    {
+        "id": "network_two_subnets", "domain": "Networking", "title": "Two LANs routed between subnets",
+        "description": "PC 1 on 10.10.1.0/24 pings a server on 10.10.2.0/24 through two access switches and a router. Inspect the router trace and longest-prefix route table.",
+        "mode": "simulate", "steps": 90, "dt": 1,
+        "nodes": [
+            {"tpl": "network_host", "x": 20, "y": 120, "name": "PC 1", "params": {"hostname": "pc1", "ip": "10.10.1.10", "mac": "02:10:10:01:00:10", "gateway": "10.10.1.1", "ping_destination": "10.10.2.100", "send_every": 12}},
+            {"tpl": "network_switch", "x": 260, "y": 120, "name": "LAN A switch", "params": {"interfaces": "eth1,eth2"}},
+            {"tpl": "network_router", "x": 500, "y": 120, "name": "Router", "params": {"hostname": "r1", "interfaces": "lanA,lanB", "interface_ips": "lanA=10.10.1.1/24\nlanB=10.10.2.1/24", "routes": "10.10.1.0/24=lanA\n10.10.2.0/24=lanB"}},
+            {"tpl": "network_switch", "x": 740, "y": 120, "name": "LAN B switch", "params": {"interfaces": "eth1,eth2"}},
+            {"tpl": "network_server", "x": 990, "y": 120, "name": "Server", "params": {"hostname": "srv1", "ip": "10.10.2.100", "mac": "02:10:10:02:01:00", "gateway": "10.10.2.1", "ping_destination": ""}},
+        ],
+        "wires": [
+            [0, "eth0", 1, "eth1"], [1, "eth1", 0, "eth0"], [1, "eth2", 2, "lanA"], [2, "lanA", 1, "eth2"],
+            [2, "lanB", 3, "eth1"], [3, "eth1", 2, "lanB"], [3, "eth2", 4, "eth0"], [4, "eth0", 3, "eth2"],
+        ],
+    },
+    {
+        "id": "network_wifi_lan", "domain": "Networking", "title": "Wired + Wi-Fi office LAN",
+        "description": "A desktop and server share an Ethernet switch with an AP; a wireless laptop joins through wlan5g. The desktop periodically pings the laptop so you can inspect MAC learning across both bridges.",
+        "mode": "simulate", "steps": 90, "dt": 1,
+        "nodes": [
+            {"tpl": "network_host", "x": 20, "y": 80, "name": "Desktop", "params": {"hostname": "desktop", "ip": "192.168.10.10", "mac": "02:00:10:00:00:10", "ping_destination": "192.168.10.50", "send_every": 12}},
+            {"tpl": "network_switch", "x": 300, "y": 150, "name": "Office switch", "params": {"interfaces": "eth1,eth2,eth3"}},
+            {"tpl": "network_server", "x": 20, "y": 270, "name": "File server", "params": {"hostname": "files", "ip": "192.168.10.100", "mac": "02:00:10:00:01:00"}},
+            {"tpl": "network_ap", "x": 580, "y": 150, "name": "Office AP", "params": {"interfaces": "ether1,wlan5g", "ssid": "knode-office"}},
+            {"tpl": "network_laptop", "x": 850, "y": 150, "name": "Laptop", "params": {"hostname": "laptop", "ip": "192.168.10.50", "mac": "02:00:10:00:00:50"}},
+        ],
+        "wires": [
+            [0, "eth0", 1, "eth1"], [1, "eth1", 0, "eth0"], [2, "eth0", 1, "eth2"], [1, "eth2", 2, "eth0"],
+            [1, "eth3", 3, "ether1"], [3, "ether1", 1, "eth3"], [3, "wlan5g", 4, "wlan0"], [4, "wlan0", 3, "wlan5g"],
+        ],
+    },
+    {
+        "id": "network_wan_delay_loss", "domain": "Networking", "title": "Branch-to-branch WAN with delay/loss",
+        "description": "Two routed LANs are joined by a Duplex Link. Change delay_steps and loss to study WAN impairment while PC A pings PC B.",
+        "mode": "simulate", "steps": 150, "dt": 1,
+        "nodes": [
+            {"tpl": "network_host", "x": 10, "y": 120, "name": "PC A", "params": {"hostname": "pc-a", "ip": "10.1.0.10", "mac": "02:01:00:00:00:10", "gateway": "10.1.0.1", "ping_destination": "10.2.0.10", "send_every": 15}},
+            {"tpl": "network_router", "x": 240, "y": 120, "name": "Branch A router", "params": {"hostname": "ra", "interfaces": "lan0,wan0", "interface_ips": "lan0=10.1.0.1/24\nwan0=172.16.0.1/30", "routes": "10.1.0.0/24=lan0\n10.2.0.0/24=wan0,172.16.0.2"}},
+            {"tpl": "network_duplex_link", "x": 500, "y": 120, "name": "WAN", "params": {"delay_steps": 3, "loss": 0.05, "seed": 7}},
+            {"tpl": "network_router", "x": 750, "y": 120, "name": "Branch B router", "params": {"hostname": "rb", "interfaces": "wan0,lan0", "interface_ips": "wan0=172.16.0.2/30\nlan0=10.2.0.1/24", "routes": "10.1.0.0/24=wan0,172.16.0.1\n10.2.0.0/24=lan0"}},
+            {"tpl": "network_host", "x": 1010, "y": 120, "name": "PC B", "params": {"hostname": "pc-b", "ip": "10.2.0.10", "mac": "02:02:00:00:00:10", "gateway": "10.2.0.1", "ping_destination": ""}},
+        ],
+        "wires": [
+            [0, "eth0", 1, "lan0"], [1, "lan0", 0, "eth0"], [1, "wan0", 2, "a"], [2, "to_a", 1, "wan0"],
+            [3, "wan0", 2, "b"], [2, "to_b", 3, "wan0"], [3, "lan0", 4, "eth0"], [4, "eth0", 3, "lan0"],
+        ],
+    },
+    {
+        "id": "network_packet_monitor", "domain": "Networking", "title": "Packet taps on a switched link",
+        "description": "Two inline Packet Monitor nodes count traffic in each direction between PC 1 and a switch. Run the simulation and compare packets/bytes on the TX and RX taps.",
+        "mode": "simulate", "steps": 80, "dt": 1,
+        "nodes": [
+            {"tpl": "network_host", "x": 10, "y": 120, "name": "PC 1", "params": {"hostname": "pc1", "ip": "192.168.20.10", "mac": "02:20:00:00:00:10", "ping_destination": "192.168.20.20", "send_every": 10}},
+            {"tpl": "network_monitor", "x": 220, "y": 70, "name": "PC1 → switch"},
+            {"tpl": "network_monitor", "x": 220, "y": 220, "name": "switch → PC1"},
+            {"tpl": "network_switch", "x": 470, "y": 120, "name": "Switch", "params": {"interfaces": "eth1,eth2"}},
+            {"tpl": "network_host", "x": 760, "y": 120, "name": "PC 2", "params": {"hostname": "pc2", "ip": "192.168.20.20", "mac": "02:20:00:00:00:20"}},
+        ],
+        "wires": [
+            [0, "eth0", 1, "rx"], [1, "tx", 3, "eth1"], [3, "eth1", 2, "rx"], [2, "tx", 0, "eth0"],
+            [4, "eth0", 3, "eth2"], [3, "eth2", 4, "eth0"],
+        ],
+    },
+    {
+        "id": "network_mixed_vendor", "domain": "Networking", "title": "Mixed-vendor office hardware",
+        "description": "Ready-made Cisco Catalyst switch + MikroTik cAP ax with a PC, server and Wi-Fi laptop. This example demonstrates the one-click hardware templates as well as the preset selector.",
+        "mode": "simulate", "steps": 90, "dt": 1,
+        "nodes": [
+            {"tpl": "network_host", "x": 10, "y": 80, "name": "Admin PC", "params": {"hostname": "admin", "ip": "192.168.30.10", "mac": "02:30:00:00:00:10", "ping_destination": "192.168.30.50", "send_every": 12}},
+            {"tpl": "network_cisco_c9200l_24t_4g", "x": 300, "y": 150, "name": "Cisco access switch", "params": {"interfaces": "Gi1/0/1,Gi1/0/2,Gi1/0/3,Gi1/1/1"}},
+            {"tpl": "network_server", "x": 10, "y": 280, "name": "Server", "params": {"hostname": "srv", "ip": "192.168.30.100", "mac": "02:30:00:00:01:00"}},
+            {"tpl": "network_mikrotik_cap_ax", "x": 620, "y": 150, "name": "MikroTik cAP ax", "params": {"interfaces": "ether1,wlan2g,wlan5g", "ssid": "Office"}},
+            {"tpl": "network_laptop", "x": 920, "y": 150, "name": "Wi-Fi laptop", "params": {"hostname": "wifi-client", "ip": "192.168.30.50", "mac": "02:30:00:00:00:50"}},
+        ],
+        "wires": [
+            [0, "eth0", 1, "Gi1/0/1"], [1, "Gi1/0/1", 0, "eth0"], [2, "eth0", 1, "Gi1/0/2"], [1, "Gi1/0/2", 2, "eth0"],
+            [1, "Gi1/0/3", 3, "ether1"], [3, "ether1", 1, "Gi1/0/3"], [3, "wlan5g", 4, "wlan0"], [4, "wlan0", 3, "wlan5g"],
+        ],
+    },
+    {
+        "id": "network_console_tools", "domain": "Networking", "title": "Host network diagnostics console",
+        "description": "A standalone Network Console starter. It is disabled by default; enable it, choose one of the allowlisted ping/traceroute/DNS/TCP/ip commands, and use Run command now in Properties.",
+        "mode": "run", "nodes": [
+            {"tpl": "network_console", "x": 180, "y": 120, "name": "Diagnostics", "params": {"enabled": False, "command": "ip route", "timeout": 8.0, "allow_private_targets": True}},
+        ], "wires": [],
+    },
+]
+
+
 def _group_payload(ex, node):
     """Build the inner engine payload of a group used in an example, applying per-instance parameter overrides."""
     g = ex["groups"][node["group"]]

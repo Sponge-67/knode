@@ -12,7 +12,7 @@
   const KS = window.KnodeSci, UI = window.KnodeUI;
   const $ = (s, r) => (r || document).querySelector(s);
   const esc = (s) => escapeHtml(s === undefined || s === null ? '' : String(s));
-  const VERSION = '0.7.0';
+  const VERSION = '0.8.2';
 
   // ------------------------------------------------------------------ styles
   const css = `
@@ -52,8 +52,9 @@
   // [area, [[feature, description, how to use, tag?], …]]
   const FEATURES = [
     ['Building models', [
-      ['Node library', 'Over 80 ready-made node types in 13 categories, from constants and math to epidemics, neurons, PID controllers, PDEs and design tools. Every node carries its equations, defaults, description and literature references.', 'Sidebar (drag onto the canvas) · Tab · double-click the canvas'],
+      ['Node library', 'Over 90 ready-made node types in 14 categories, from constants and math to network devices, epidemics, neurons, PID controllers, PDEs and design tools. Every node carries its equations, defaults, description and literature references.', 'Sidebar (drag onto the canvas) · Tab · double-click the canvas'],
       ['Universal nodes', 'Nodes that are modelling formalisms rather than single models: Formula Block, Dynamic System (ODEs), Difference Equations, Reaction Network, State Machine, Agent-Based Model, Network Dynamics, 2-D Field (PDE), Transfer Function, Lookup Table, Python Script. Their ports are generated from what you write.', 'Sidebar ▸ Universal'],
+      ['Network devices', 'Packet-level Router, Ethernet Switch, Wireless AP, Host/PC, Packet Monitor, Duplex Link, real-host Internet gateway and Network Console nodes. Hardware presets include MikroTik and Cisco models; network nodes use the ordinary simulation engine and dynamic ports.', 'Sidebar ▸ Networking · Properties ▸ Network device preset / host-network controls', 'Packet Tracer-style topology modelling'],
       ['Dynamic ports', 'Add an equation and an output port appears; list an input name and an input port appears. Wires on ports that still exist are kept.', 'Edit the node\'s parameters'],
       ['Any Python', 'Every node is editable Python with math, numpy (np) and knode\'s numerical library (ks) available. Inputs bind to arguments by name.', 'Double-click a node · ⚙ in Properties'],
       ['Link-drag search', 'Drag a wire from a port into empty space, pick a node — it is created and connected.', 'Drag from any port', 'Blender · Unreal · ComfyUI'],
@@ -78,7 +79,7 @@
       ['One-command start', 'python knode.py (or double-click start-windows.bat / start-mac.command / start.sh) starts the backend, opens the editor and supervises the server.', 'python knode.py'],
       ['Backend Manager', 'Status, restart, stop, live sessions, settings (cache size, session timeout, time limit), package installation (numpy, h5py) and a live log — all from the UI.', 'Backend menu · click the status dot'],
       ['Offline banner & reconnection', 'When the backend is unreachable the editor keeps working, shows how to start it and reconnects automatically.', 'Automatic'],
-      ['Remote backends', 'Point the editor at another knode backend (e.g. through an SSH tunnel). Management actions stay local-only for safety.', 'Backend ▸ Connect to another backend'],
+      ['Remote backends', 'Point the editor at another knode backend (e.g. through an SSH tunnel). Management actions stay local-only for safety. Real Internet/Console diagnostics use the backend machine network, not the browser machine.', 'Backend ▸ Connect to another backend'],
     ]],
     ['Organising large models', [
       ['Groups (hierarchy)', 'Pack a selection into one group node; boundary wires become Group Input / Group Output ports. Groups nest to any depth and each copy keeps its own state.', 'Ctrl+G · double-click to enter · Esc to leave · Ctrl+Shift+G to ungroup'],
@@ -105,7 +106,7 @@
       ['Monte Carlo & sensitivity', 'Latin-hypercube sampling of uncertain parameters (uniform, normal, lognormal, triangular); output distribution, 90 % interval and Spearman rank sensitivity.', 'Run ▸ Parameter study ▸ Monte Carlo'],
       ['Calibration & optimisation', 'Fit parameters to measured data (least squares, R², RMSE) or minimise / maximise any output with differential evolution or Nelder–Mead.', 'Run ▸ Calibrate / optimise', 'Grasshopper Galapagos'],
       ['Graph analysis', 'Feedback loops and their back edges, DAG depth, critical path (weighted by measured run time), betweenness and PageRank heat-maps, lint.', 'Run ▸ Graph analysis'],
-      ['Verified numerics', 'Every built-in model is tested against an analytic solution, a conservation law or an independent implementation (96 automated tests in total).', 'python tests/test_*.py'],
+      ['Verified numerics', 'Every built-in model is tested against an analytic solution, a conservation law or an independent implementation (101 automated tests in total).', 'python tests/test_*.py'],
     ]],
     ['Files & sharing', [
       ['JSON / YAML / XML export', 'The whole model; JSON also carries frames, dashboard and scenarios.', 'Ctrl+S · File ▸ Export'],
@@ -146,6 +147,9 @@
   ];
 
   const HISTORY = [
+    ['0.8.2', 'Lower-CPU network simulation: event-driven idle skipping for quiet network nodes, cached device configuration parsing, Eco live pacing by default with Max throughput still available; added hub/bridge/server/laptop and one-click MikroTik/Cisco hardware templates plus six additional networking examples.'],
+    ['0.8.1', 'Real host-network integration: opt-in Internet gateway for ICMP/DNS/TCP diagnostic probes plus a bounded Network Console with ping, traceroute/tracepath, DNS, TCP-connect and read-only ip tools; localhost-only immediate console endpoint and private-target guard.'],
+    ['0.8', 'Network-device modelling: packet-level routers, learning Ethernet switches, wireless AP bridges, hosts/PCs with ping, packet monitor and duplex link delay/loss; MikroTik/Cisco hardware presets, compact/full physical-port layouts and locally saved custom presets.'],
     ['0.7', 'CPU/GPU utilisation: parallel studies on worker processes (bit-identical to serial), generation-parallel differential evolution, 2.3–2.7× live-mode throughput (pipelining + adaptive chunks), zero idle CPU in the editor, coalesced rendering, native wire paths with culling, opaque canvas, memoised text layout, vectorised Kuramoto, 3× faster JSON path; Nelder–Mead convergence fix; every function documented.'],
     ['0.6', 'Run and manage the backend from the UI (launcher with supervisor, Backend Manager, offline banner, reconnection, remote backends); typed wires and ports, smart / orthogonal routing, port tooltips, compatible-port highlighting and snapping, insert-on-wire, reroute dots, knife, quick constants, flow animation; context-sensitive right-click menus.'],
     ['0.5', 'Performance: 1.5–2.7× faster simulations, 3–10× faster scheduling of large models, 4× faster canvas rendering of large graphs (culling, level of detail, cached sparklines). Extensive documentation in code, this About centre, architecture guide, benchmark suite, 8 equivalence tests.'],
@@ -201,7 +205,7 @@
           <div class="ab-kpi"><b>${Object.keys(lib.categories).length}</b><span>categories</span></div>
           <div class="ab-kpi"><b>${user}</b><span>your node types</span></div>
           <div class="ab-kpi"><b>${(KS.examples || []).length}</b><span>examples</span></div>
-          <div class="ab-kpi"><b>96</b><span>automated tests</span></div>
+          <div class="ab-kpi"><b>101</b><span>automated tests</span></div>
           <div class="ab-kpi"><b class="${h ? 'ab-good' : 'ab-warn'}">${h ? 'online' : 'offline'}</b><span>backend ${h ? esc(h.version) + ' · Python ' + esc(h.python) : '— run python server.py'}</span></div>
         </div>
         <h4>Who it is for</h4>

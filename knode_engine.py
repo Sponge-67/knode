@@ -40,7 +40,7 @@ Concurrency
 Node code may print(); stdout is process-global, so executions are serialised by one re-entrant
 lock (``_capture``). The Flask server is threaded, but model execution is one-at-a-time.
 
-Performance (0.5, 0.7)
+Performance (0.5, 0.7, 0.8.2)
 ----------------------
 The hot loop precomputes argument-binding plans, gather plans and loop flags, reuses Ctx objects
 and routes stdout through a single router instead of a redirect per call. The scheduler is linear
@@ -50,6 +50,10 @@ in the number of edges. See bench/bench_engine.py for measurements (2–3× fast
 0.7: studies (sweeps, Monte Carlo, scenarios, optimiser generations) run on a pool of worker processes
 (``pmap``; automatic on multi-core machines, bit-identical to serial execution — tests/test_parallel.py);
 traces are made JSON-safe in one pass (``_clean_traces``) instead of the generic recursive converter.
+
+0.8.2: built-in networking nodes use an event-driven idle fast path during simulations: quiet
+switches/routers/APs/monitors/links/hosts skip Python execution until an input, timer or queued frame
+needs work. This is intentionally not applied to general dynamic/scientific nodes.
 
 The engine accepts both the editor's execution payload (``{"nodes": {...}, "connections": [...]}``)
 and the editor's export format (``{"nodes": {...}, "wires": [...]}``), so saved files run headlessly.
@@ -84,11 +88,25 @@ try:
 except Exception:  # pragma: no cover
     np = None
 
-__version__ = "0.7.0"
+__version__ = "0.8.2"
 
 RESERVED = ("params", "state", "t", "dt", "step", "ctx")
 _EXEC_LOCK = threading.RLock()          # stdout redirection is process-global
 MAX_STDOUT = 20000
+
+# Sparse/event-driven simulation is deliberately restricted to built-in networking
+# nodes. Scientific/dynamic nodes still execute every fixed step. A network node can
+# safely idle when no packet/timer/queued event exists; the engine emits neutral packet
+# outputs while preserving its last counters/status. This avoids thousands of Python
+# calls in quiet Packet-Tracer-style topologies without changing packet timing.
+_NO_SPARSE = object()
+_NETWORK_DEVICE_TEMPLATES = {
+    "network_device", "network_router", "network_switch", "network_ap",
+    "network_hub", "network_bridge",
+    "network_mikrotik_rb5009", "network_mikrotik_hex_s", "network_mikrotik_crs326",
+    "network_mikrotik_cap_ax", "network_cisco_isr4331", "network_cisco_c9200l_24t_4g",
+    "network_cisco_c9300_24t", "network_cisco_c9115",
+}
 
 
 # ============================================================================
@@ -747,6 +765,7 @@ class Run:
         self._cyclic_for, self._cyclic = None, None
         self._ctxs: Dict[str, Ctx] = {}
         self._breaks = {nid: sp.flags["break_if"] for nid, sp in graph.nodes.items() if sp.flags.get("break_if")}
+        self.idle_skips: Dict[str, int] = defaultdict(int)     # event-driven network fast path
         # parameters written as "=expression" are resolved before anything runs
         for nid, msg in resolve_params(graph).items():
             self.status[nid] = "error"
@@ -1055,6 +1074,92 @@ class Run:
                 self.warnings.append(f"loop {[self.graph.nodes[n].name for n in block]} did not converge in {max_iter} iterations")
         return loop_info
 
+    @staticmethod
+    def _has_event_value(v):
+        """True when a network input carries an actual event/packet rather than an empty fan-in."""
+        if v is None:
+            return False
+        if isinstance(v, (list, tuple)):
+            return any(Run._has_event_value(x) for x in v)
+        return True
+
+    def _network_idle_output(self, nid, inputs):
+        """Return a cheap output for an idle built-in network node, or ``_NO_SPARSE``.
+
+        The first step always executes normally so status/counters are initialised. Packet-carrying
+        ports are neutralised to ``None``; observational outputs are copied from the previous step.
+        Hosts still execute on their periodic send tick, and delayed links execute while a queue is
+        non-empty. Nodes with conditional breakpoints are never skipped.
+        """
+        if not self.simulating or nid in self._breaks:
+            return _NO_SPARSE
+        sp = self.graph.nodes[nid]
+        tid = sp.template or ""
+        if not tid.startswith("network_") or nid not in self.prev_outputs:
+            return _NO_SPARSE
+        prev = self.prev_outputs.get(nid) or {}
+        st = self.state[nid]
+
+        if tid in _NETWORK_DEVICE_TEMPLATES:
+            if any(self._has_event_value(v) for v in inputs.values()):
+                return _NO_SPARSE
+            out = {o: None for o in sp.outputs}
+            if "status" in out:
+                out["status"] = prev.get("status")
+
+        elif tid in ("network_host", "network_server", "network_laptop"):
+            if any(self._has_event_value(v) for v in inputs.values()):
+                return _NO_SPARSE
+            dest = str(sp.params.get("ping_destination", "")).strip()
+            every = max(1, int(sp.params.get("send_every", 10) or 10))
+            if dest and self.step % every == 0:
+                return _NO_SPARSE
+            out = {o: None for o in sp.outputs}
+            if "status" in out:
+                out["status"] = prev.get("status")
+
+        elif tid == "network_monitor":
+            if self._has_event_value(inputs.get("rx")):
+                return _NO_SPARSE
+            out = dict(prev)
+            out["tx"] = None
+
+        elif tid == "network_duplex_link":
+            if self._has_event_value(inputs.get("a")) or self._has_event_value(inputs.get("b")):
+                return _NO_SPARSE
+            queues = (st.get("qa") or []) + (st.get("qb") or [])
+            # New link queues store (due_step, frame). Wake only when a delayed frame is due.
+            # Unknown/legacy queue shapes fall back to normal execution.
+            if queues:
+                try:
+                    if any(int(item[0]) <= self.step for item in queues):
+                        return _NO_SPARSE
+                except Exception:
+                    return _NO_SPARSE
+            out = dict(prev)
+            out["to_a"] = None
+            out["to_b"] = None
+
+        elif tid == "network_internet":
+            # Disabled Internet nodes ignore traffic by design; enabled nodes wake for any frame.
+            if bool(sp.params.get("enabled", False)) and self._has_event_value(inputs.get("lan")):
+                return _NO_SPARSE
+            out = dict(prev)
+            out["lan"] = None
+
+        elif tid == "network_console":
+            # Parameter-driven consoles execute once and then reuse the bounded diagnostic result.
+            # A wired command/trigger is left to the node so its own key cache preserves semantics.
+            if any(self._has_event_value(v) for v in inputs.values()):
+                return _NO_SPARSE
+            out = dict(prev)
+
+        else:
+            return _NO_SPARSE
+
+        self.idle_skips[nid] += 1
+        return out
+
     def _exec_one(self, nid, back, use_prev):
         """Run one node inside a pass: skip it if an upstream node failed, catch its errors, check breakpoints."""
         if nid not in self.compiled:
@@ -1071,7 +1176,9 @@ class Run:
         if time.monotonic() > self.deadline:
             raise TimeoutError("time limit exceeded")
         try:
-            out = self.outputs[nid] = self.call(nid, self.gather(nid, back, use_prev))
+            inputs = self.gather(nid, back, use_prev)
+            idle = self._network_idle_output(nid, inputs)
+            out = self.outputs[nid] = (self.call(nid, inputs) if idle is _NO_SPARSE else idle)
             self.status[nid] = "ok"
             cond = self._breaks.get(nid)
             if cond is not None and self.breakpoint is None:  # Blueprint-style conditional breakpoint
@@ -1106,6 +1213,7 @@ class Run:
             "profile": prof,
             "groups": to_jsonable(self.group_reports),
             "cached": self.cached,
+            "idle_skips": dict(self.idle_skips),
             "breakpoint": self.breakpoint,
         }
         rep.update(extra)
